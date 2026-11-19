@@ -40,6 +40,7 @@ jobs:
       - name: Verify offline conflicts in Chromium on PostgreSQL and MySQL
         env:
           RC_BROWSER_CONFLICT_TEST: '1'
+          RC_MYSQL_TEST_CONTAINER: ${{ job.services.mysql.id }}
           RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}
         run: |
           export RC_TEST_CHROMIUM="$(command -v google-chrome || command -v chromium)"

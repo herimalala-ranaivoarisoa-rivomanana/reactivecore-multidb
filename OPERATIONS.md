@@ -4,15 +4,15 @@ These instructions cover the Linux amd64 alpha image, an existing PostgreSQL 16 
 
 ## Install a release
 
-From the [MultiDB prerelease](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.1), download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Verify the downloads and load the image. Replace the version in the commands with the published tag.
+From the [MultiDB prerelease](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.2), download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Verify the downloads and load the image. Replace the version in the commands with the published tag.
 
 ```sh
 sha256sum -c SHA256SUMS
-docker load -i reactivecore-multidb-v0.2.0-alpha.1-linux-amd64.tar.gz
-export RC_IMAGE=reactivecore-multidb:v0.2.0-alpha.1
+docker load -i reactivecore-multidb-v0.2.0-alpha.2-linux-amd64.tar.gz
+export RC_IMAGE=reactivecore-multidb:v0.2.0-alpha.2
 ```
 
-To install the SDK from that release, run `npm install ./reactivecore-client-0.2.0-alpha.1.tgz` from your frontend. The release workflow publishes both files to GitHub Releases.
+To install the SDK from that release, run `npm install ./reactivecore-client-0.2.0-alpha.2.tgz` from your frontend. The release workflow publishes both files to GitHub Releases.
 
 ## Start a deployment
 
@@ -141,6 +141,46 @@ npm run build
 node scripts/test-cloud-postgres.mjs
 ```
 
+## Validate a managed MySQL 8.4 database
+
+Prepare an empty, disposable database named `reactivecore_cloud_mysql_test` with the owner, API, and worker accounts. Use the provider's direct MySQL endpoint. Create the accounts with TLS required if your provider supports that setting.
+
+1. Follow the [MySQL walkthrough](README.md#run-the-same-project-on-mysql-84) with project slug `cloud-mysql-test` in place of `my-project`. Replace every database name with `reactivecore_cloud_mysql_test`. Copy the supplied MySQL migrations, provision once as the project owner, and apply the runtime grants as the provider administrator. This creates the tables before the table-level grants are assigned. The owner requires schema-level rights only. Use `mysql.tables: ["items", "charges"]` in the manifest.
+2. Create a GitHub Actions environment named `cloud-mysql-test`. Configure its secrets as follows.
+
+   | Secret | Value |
+   | --- | --- |
+   | `RC_MYSQL_CLOUD_OWNER_URL` | Owner URL for the dedicated test database. |
+   | `RC_MYSQL_CLOUD_APP_URL` | URL for the `reactivecore_app` login. |
+   | `RC_MYSQL_CLOUD_WORKER_URL` | URL for the `reactivecore_worker` login. |
+   | `RC_MYSQL_CLOUD_CA_PEM` | Optional CA certificate or chain in PEM format. |
+
+   Every URL must use the certificate's DNS name and end with `/reactivecore_cloud_mysql_test?ssl=verify-full`. URL-encode credential values. Use a runner with network access to the provider, through private networking where required.
+3. Run **Validate managed MySQL** in GitHub Actions. The workflow checks TLS for each account, rejects an untrusted certificate chain, verifies restricted table access, and runs the shared tenant isolation, replay, reservation, report, SSE, and worker scenarios. It leaves test rows in the dedicated database. Its logs identify the failing stage without printing connection URLs.
+
+To run locally against a reachable test database, set the same URL variables, set `RC_MYSQL_CLOUD_REDIS_URL`, and point `NODE_EXTRA_CA_CERTS` to the trusted PEM file when required. Build the workspace and run `node scripts/test-cloud-mysql.mjs`.
+
+The PostgreSQL workflow can be run against Neon with the direct endpoint and provider-specific role setup. Both cloud workflows require configured provider instances and credentials in GitHub Secrets.
+
+## Rehearse a MySQL logical backup and upgrade
+
+Run the following from an administrative workstation configured for TLS. Use a database-scoped backup account and a dedicated restore database. This example assumes MySQL client option files contain the host, user, and TLS settings. Keep option files readable only by their owner.
+
+```sh
+umask 077
+mysqldump --defaults-extra-file=/secure/mysql-backup.cnf \
+  --single-transaction --no-tablespaces --set-gtid-purged=OFF \
+  reactivecore_my_project > project-mysql.sql
+mysql --defaults-extra-file=/secure/mysql-restore.cnf \
+  --binary-mode reactivecore_my_project_restore < project-mysql.sql
+```
+
+Create the target database first. Recreate runtime accounts and grants from infrastructure configuration. The logical dump preserves the project tables and migration ledger. To run the application against a recovered cluster, restore into a database with the original project name so it matches the manifest.
+
+Before upgrading, test against a restored copy, pause the API and worker, make a fresh backup, and apply the new migrations. MySQL DDL can commit independently of the migration ledger. Inspect the resulting schema after a failed migration before retrying. Verify an existing query, replay a pre-upgrade mutation with the original identity and key, and verify a new subscribed change.
+
+The release test loads the checksum-verified `v0.2.0-alpha.1` image, creates a row with that version, runs the new image against the same database, and verifies that the row and mutation receipt still work. It also dumps and restores the updated schema in a separate database and compares rows, receipts, change journal, and migration history.
+
 ## Back up and rehearse a restore
 
 Use PostgreSQL client tools compatible with the database server. Configure libpq services and credentials using protected files or your infrastructure's credential mechanism. In the example, `rc_project` connects to the live project database and `rc_restore_admin` connects to the `postgres` maintenance database on a separate recovery cluster.
@@ -178,4 +218,4 @@ Check `/api/health/live` for process liveness, `/api/health/ready` for database 
 
 ## Cut a release
 
-After reviewing the changes and verifying them in CI, set matching versions in the root and SDK manifests and update the lockfile. Create and push a tag matching the version, such as `v0.2.0-alpha.1`. The tag workflow builds and reloads the image, installs the SDK archive into the Next.js browser example, checks both database engines and a PostgreSQL restore, then publishes a GitHub prerelease with checksums.
+After reviewing the changes and verifying them in CI, set matching versions in the root and SDK manifests and update the lockfile. Create and push a tag matching the version, such as `v0.2.0-alpha.2`. The tag workflow builds and reloads the image, installs the SDK archive into the Next.js browser example, checks both database engines and a PostgreSQL restore, then publishes a GitHub prerelease with checksums.

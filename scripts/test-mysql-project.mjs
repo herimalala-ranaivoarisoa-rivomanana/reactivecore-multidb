@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
   chmod,
   cp,
   mkdtemp,
+  mkdir,
   readdir,
   rename,
   rm,
@@ -73,6 +74,8 @@ const env = {
 delete env.RC_MYSQL_TEST_URL;
 delete env.RC_MYSQL_TEST_ROLE_PASSWORD;
 const image = process.env.RC_TEST_IMAGE;
+const previousImage = process.env.RC_MYSQL_UPGRADE_IMAGE;
+const mysqlContainer = process.env.RC_MYSQL_TEST_CONTAINER;
 const runtimeKeys = [
   'DATABASE_URL',
   'REDIS_URL',
@@ -85,7 +88,12 @@ const runtimeKeys = [
   'RC_CORS_ORIGINS',
 ];
 
-function dockerArgs(command, keys, ...args) {
+function dockerArgs(
+  command,
+  keys,
+  { runtime = image, project = directory } = {},
+  ...args
+) {
   return [
     'run',
     '--rm',
@@ -94,9 +102,9 @@ function dockerArgs(command, keys, ...args) {
     '--name',
     `${name}-${command}`,
     '--mount',
-    `type=bind,src=${directory},dst=/project,readonly`,
+    `type=bind,src=${project},dst=/project,readonly`,
     ...keys.flatMap((key) => ['--env', key]),
-    image,
+    runtime,
     command,
     '/project',
     ...args,
@@ -111,7 +119,7 @@ const cli = (command, ...args) => {
   return image
     ? exec(
         'docker',
-        dockerArgs(command, ['RC_PROVISION_ADMIN_URL'], ...args.slice(1)),
+        dockerArgs(command, ['RC_PROVISION_ADMIN_URL'], {}, ...args.slice(1)),
         options,
       )
     : exec(
@@ -121,15 +129,15 @@ const cli = (command, ...args) => {
       );
 };
 
-function start(command, role) {
+function start(command, role, runtime = image, project = directory) {
   const options = {
     env: { ...env, DATABASE_URL: runtimeUrl(role) },
     stdio: ['ignore', 'pipe', 'pipe'],
   };
   const keys =
     command === 'serve' ? runtimeKeys : ['DATABASE_URL', 'REDIS_URL'];
-  const child = image
-    ? spawn('docker', dockerArgs(command, keys), options)
+  const child = runtime
+    ? spawn('docker', dockerArgs(command, keys, { runtime, project }), options)
     : spawn(
         process.execPath,
         ['scripts/reactivecore.mjs', command, directory],
@@ -154,9 +162,175 @@ async function tokenFor(tenantId) {
     .setExpirationTime('5m')
     .sign(new TextEncoder().encode(jwt));
 }
-async function clientFor(tenantId) {
-  const token = await tokenFor(tenantId);
+async function clientFor(tenantId, token) {
+  token ??= await tokenFor(tenantId);
   return new ReactiveCoreClient(origin, () => token);
+}
+
+async function waitReady(api, signal) {
+  for (;;) {
+    assert.equal(api.exitCode, null);
+    if (
+      (
+        await fetch(`${origin}/api/health/ready`, { signal }).catch(
+          () => undefined,
+        )
+      )?.ok
+    )
+      return;
+    await setTimeout(100, undefined, { signal });
+  }
+}
+
+async function seedPreviousVersion() {
+  const old = await mkdtemp(join(tmpdir(), 'reactivecore-mysql-upgrade-'));
+  try {
+    const migrations = join(old, 'migrations/mysql');
+    await mkdir(migrations, { recursive: true });
+    for (const file of [
+      'application.mjs',
+      'migrations/mysql/001_items.sql',
+      'migrations/mysql/002_item_versions.sql',
+    ]) {
+      const { stdout } = await exec('git', [
+        'show',
+        `v0.2.0-alpha.1:scripts/test-fixtures/project/${file}`,
+      ]);
+      await writeFile(join(old, file), stdout, { mode: 0o644 });
+    }
+    await chmod(old, 0o755);
+    await writeFile(
+      join(old, 'project.json'),
+      JSON.stringify({ name, mysql: { tables: ['items'] } }),
+      { mode: 0o644 },
+    );
+    const runOld = (command, ...args) =>
+      exec(
+        'docker',
+        dockerArgs(
+          command,
+          ['RC_PROVISION_ADMIN_URL'],
+          { runtime: previousImage, project: old },
+          ...args,
+        ),
+        { env: { ...env, RC_PROVISION_ADMIN_URL: adminUrl }, timeout: 30000 },
+      );
+    await runOld('provision');
+    const baselineTenant = randomUUID();
+    await runOld('tenant', baselineTenant);
+    await grantRuntime(false);
+    const previous = start('serve', 'reactivecore_app', previousImage, old);
+    try {
+      const signal = AbortSignal.timeout(30000);
+      await waitReady(previous, signal);
+      const client = await clientFor(baselineTenant);
+      const key = randomUUID();
+      const args = { title: 'Unchanged through upgrade' };
+      const result = await client.mutate('items.create', args, key, signal);
+      return { client, key, args, result };
+    } finally {
+      await exec('docker', ['stop', '--time', '5', `${name}-serve`]);
+    }
+  } finally {
+    await rm(old, { recursive: true, force: true });
+  }
+}
+
+async function grantRuntime(current) {
+  const appGrants = [
+    ['rc_commit_clock', 'SELECT, UPDATE'],
+    ['rc_receipts', 'SELECT, INSERT, UPDATE'],
+    ['rc_changes', 'SELECT, INSERT'],
+    ['rc_outbox', 'INSERT'],
+    ['items', 'SELECT, INSERT'],
+  ];
+  if (current) appGrants.push(['charges', 'SELECT, INSERT']);
+  for (const [table, grants] of appGrants) {
+    await admin.query(
+      `GRANT ${grants} ON \`${database}\`.\`${table}\` TO 'reactivecore_app'@'%'`,
+    );
+  }
+  const columns = current ? 'title, version, reserved_by' : 'title, version';
+  await admin.query(
+    `GRANT UPDATE (${columns}), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
+  );
+  await admin.query(
+    `GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
+     ON \`${database}\`.rc_outbox TO 'reactivecore_worker'@'%'`,
+  );
+}
+
+async function checkRestore() {
+  const restored = `${database}_restore`;
+  const url = new URL(base);
+  function tool(command, args, input) {
+    const result = spawnSync(
+      'docker',
+      [
+        'exec',
+        '-i',
+        '--env',
+        'MYSQL_PWD',
+        mysqlContainer,
+        command,
+        '-u',
+        decodeURIComponent(url.username),
+        ...args,
+      ],
+      {
+        input,
+        env: { ...process.env, MYSQL_PWD: decodeURIComponent(url.password) },
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 30000,
+      },
+    );
+    if (result.error || result.status !== 0)
+      throw new Error(`MySQL backup tool failed: ${command}`, {
+        cause: result.error,
+      });
+    return result.stdout;
+  }
+  const backup = tool('mysqldump', [
+    '--single-transaction',
+    '--no-tablespaces',
+    '--set-gtid-purged=OFF',
+    '--column-statistics=0',
+    database,
+  ]);
+  await admin.query(
+    `CREATE DATABASE \`${restored}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`,
+  );
+  try {
+    tool('mysql', ['--binary-mode', restored], backup);
+    for (const [table, key] of [
+      ['items', 'id'],
+      ['charges', 'id'],
+      ['rc_receipts', 'idempotency_key'],
+      ['rc_changes', 'seq, ordinal'],
+      ['rc_migrations', 'name'],
+    ]) {
+      const [original] = await admin.query(
+        `SELECT * FROM \`${database}\`.${table} ORDER BY ${key}`,
+      );
+      const [copy] = await admin.query(
+        `SELECT * FROM \`${restored}\`.${table} ORDER BY ${key}`,
+      );
+      assert.ok(original.length > 0);
+      assert.deepEqual(copy, original);
+    }
+    const [[original]] = await admin.query(
+      `SELECT COUNT(*) AS count FROM \`${database}\`.rc_outbox`,
+    );
+    const [[copy]] = await admin.query(
+      `SELECT COUNT(*) AS count FROM \`${restored}\`.rc_outbox`,
+    );
+    assert.deepEqual(copy, original);
+    console.log(
+      'MySQL logical backup restored with application rows, receipts, journal, and migration history.',
+    );
+  } finally {
+    await admin.query(`DROP DATABASE \`${restored}\``);
+  }
 }
 
 let created = false;
@@ -238,45 +412,51 @@ try {
     );
   }
 
+  const baseline = previousImage ? await seedPreviousVersion() : undefined;
   const installed = await cli('provision', directory);
-  assert.match(installed.stdout, /Applied project\/001_items.sql/);
+  assert.match(
+    installed.stdout,
+    baseline
+      ? /Applied project\/003_item_reservations.sql/
+      : /Applied project\/001_items.sql/,
+  );
   assert.doesNotMatch((await cli('provision', directory)).stdout, /Applied /);
   await cli('tenant', directory, tenant);
   await cli('tenant', directory, otherTenant);
-  const appGrants = [
-    ['rc_commit_clock', 'SELECT, UPDATE'],
-    ['rc_receipts', 'SELECT, INSERT, UPDATE'],
-    ['rc_changes', 'SELECT, INSERT'],
-    ['rc_outbox', 'INSERT'],
-    ['items', 'SELECT, INSERT'],
-    ['charges', 'SELECT, INSERT'],
-  ];
-  for (const [table, grants] of appGrants) {
-    await admin.query(
-      `GRANT ${grants} ON \`${database}\`.\`${table}\` TO 'reactivecore_app'@'%'`,
-    );
-  }
-  await admin.query(
-    `GRANT UPDATE (title, version, reserved_by), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
-  );
-  await admin.query(
-    `GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
-     ON \`${database}\`.rc_outbox TO 'reactivecore_worker'@'%'`,
-  );
+  await grantRuntime(true);
 
   const api = start('serve', 'reactivecore_app');
   const signal = AbortSignal.timeout(30000);
-  for (;;) {
-    assert.equal(api.exitCode, null);
-    if (
+  await waitReady(api, signal);
+  if (baseline) {
+    const detail = await baseline.client.query(
+      'items.get',
+      { id: baseline.result.data.id },
+      signal,
+    );
+    assert.deepEqual(detail.data, { ...baseline.result.data, version: 1 });
+    assert.deepEqual(
+      await baseline.client.mutate(
+        'items.create',
+        baseline.args,
+        baseline.key,
+        signal,
+      ),
+      { ...baseline.result, replayed: true },
+    );
+    assert.deepEqual(
       (
-        await fetch(`${origin}/api/health/ready`, { signal }).catch(
-          () => undefined,
+        await baseline.client.query(
+          'items.available',
+          { offset: 0, limit: 10 },
+          signal,
         )
-      )?.ok
-    )
-      break;
-    await setTimeout(100, undefined, { signal });
+      ).data,
+      [{ ...baseline.result.data, version: 1 }],
+    );
+    console.log(
+      'MySQL upgraded from v0.2.0-alpha.1 with existing data and idempotency receipts.',
+    );
   }
 
   const client = await clientFor(tenant);
@@ -288,7 +468,7 @@ try {
     const key = randomUUID();
     const args = { title: 'Same application, MySQL' };
     await admin.query(
-      `ALTER TABLE \`${database}\`.rc_outbox ADD CONSTRAINT reject_test_event CHECK (event_type <> 'reactive.changed')`,
+      `ALTER TABLE \`${database}\`.rc_outbox ADD CONSTRAINT reject_test_event CHECK (tenant_id <> '${tenant}' OR event_type <> 'reactive.changed')`,
     );
     try {
       await assert.rejects(client.mutate('items.create', args, key, signal), {
@@ -296,7 +476,7 @@ try {
       });
       assert.deepEqual(await client.query('items.list', {}, signal), {
         data: [],
-        seq: '0',
+        seq: baseline?.result.commitSeq ?? '0',
       });
     } finally {
       await admin.query(
@@ -367,6 +547,7 @@ try {
       signal: AbortSignal.timeout(90000),
     });
   }
+  if (mysqlContainer) await checkRestore();
   console.log(
     'MySQL verified: provision, tenant isolation, rollback, replay, SSE reconnect, and outbox delivery.',
   );
@@ -374,7 +555,7 @@ try {
   if (logs.length) console.error(logs.join(''));
   throw error;
 } finally {
-  if (image) {
+  if (image || previousImage) {
     await Promise.allSettled(
       ['serve', 'worker'].map((command) =>
         exec('docker', ['stop', '--time', '5', `${name}-${command}`]),

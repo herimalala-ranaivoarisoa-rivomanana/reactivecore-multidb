@@ -23,6 +23,8 @@ jobs:
         options: --health-cmd "mysqladmin ping -h 127.0.0.1 --silent" --health-interval 5s --health-timeout 4s --health-retries 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -59,9 +61,13 @@ jobs:
           test "$(node -p "require('./node_modules/@reactivecore/client/package.json').version")" = "${GITHUB_REF_NAME#v}"
           test ! -L node_modules/@reactivecore/client
           npm run build
+      - name: Load the published MySQL upgrade baseline
+        run: bash scripts/load-mysql-upgrade-baseline.sh
       - name: Verify packaged SDK and runtime image on PostgreSQL and MySQL
         env:
           RC_BROWSER_CONFLICT_TEST: '1'
+          RC_MYSQL_UPGRADE_IMAGE: reactivecore-multidb:v0.2.0-alpha.1
+          RC_MYSQL_TEST_CONTAINER: ${{ job.services.mysql.id }}
           RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}
         run: |
           export RC_TEST_IMAGE="reactivecore-multidb:$GITHUB_REF_NAME"

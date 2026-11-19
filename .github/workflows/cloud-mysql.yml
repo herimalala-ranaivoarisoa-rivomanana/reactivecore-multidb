@@ -1,0 +1,48 @@
+name: Validate managed MySQL
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-mysql-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: cloud-mysql-test
+    services:
+      redis:
+        image: redis:7.4
+        ports:
+          - '6379/tcp'
+        options: --health-cmd "redis-cli ping" --health-interval 3s --health-timeout 2s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify TLS, privileges, and reactive writes
+        env:
+          RC_MYSQL_CLOUD_OWNER_URL: ${{ secrets.RC_MYSQL_CLOUD_OWNER_URL }}
+          RC_MYSQL_CLOUD_APP_URL: ${{ secrets.RC_MYSQL_CLOUD_APP_URL }}
+          RC_MYSQL_CLOUD_WORKER_URL: ${{ secrets.RC_MYSQL_CLOUD_WORKER_URL }}
+          RC_MYSQL_CLOUD_CA_PEM: ${{ secrets.RC_MYSQL_CLOUD_CA_PEM }}
+          RC_MYSQL_CLOUD_REDIS_URL: redis://127.0.0.1:${{ job.services.redis.ports[6379] }}
+        run: |
+          if [ -n "$RC_MYSQL_CLOUD_CA_PEM" ]; then
+            umask 077
+            ca_file="$(mktemp)"
+            trap 'rm -f "$ca_file"' EXIT
+            printf '%s\n' "$RC_MYSQL_CLOUD_CA_PEM" > "$ca_file"
+            export NODE_EXTRA_CA_CERTS="$ca_file"
+          fi
+          unset RC_MYSQL_CLOUD_CA_PEM
+          node scripts/test-cloud-mysql.mjs

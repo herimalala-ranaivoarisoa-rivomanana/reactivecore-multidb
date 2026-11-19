@@ -8,7 +8,7 @@ You supply the schema, queries, mutations, and access policies. ReactiveCore iso
 
 This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend for a live item list. You can replace either example with your own application.
 
-**Preview release.** See [MultiDB v0.2.0-alpha.1](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.1) for the Linux amd64 runtime image and TypeScript SDK. The [operations guide](OPERATIONS.md#install-a-release) shows how to verify and load the release artifacts.
+**Preview release.** See [MultiDB v0.2.0-alpha.2](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.2) for the Linux amd64 runtime image and TypeScript SDK. The [operations guide](OPERATIONS.md#install-a-release) shows how to verify and load the release artifacts.
 
 [Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Next.js conflict example](#run-the-nextjs-offline-conflict-example) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
@@ -275,7 +275,7 @@ cp ../my-project/client.ts ../my-project-web/src/reactivecore-client.ts
 
 cd ../my-project-web
 npm install
-npm install ./reactivecore-client-0.2.0-alpha.1.tgz
+npm install ./reactivecore-client-0.2.0-alpha.2.tgz
 ```
 
 Use the filename printed by `npm pack` if your SDK version differs. After changing the backend's function contracts, rerun `codegen` from the ReactiveCore repository and copy the new file into `src/reactivecore-client.ts`.
@@ -353,7 +353,7 @@ npm pack -w @reactivecore/client --pack-destination ../my-project-next
 cp ../my-project/client.ts ../my-project-next/src/reactivecore-client.ts
 
 cd ../my-project-next
-npm install ./reactivecore-client-0.2.0-alpha.1.tgz
+npm install ./reactivecore-client-0.2.0-alpha.2.tgz
 ```
 
 From `my-project-next`, replace the starter layout and home page. The layout uses system fonts, and the Client Component opens the subscription in the browser.
@@ -691,7 +691,7 @@ Use the API and worker commands from step 5 in separate terminals. In each termi
 
 Repeat steps 6–8. The first query returns an empty list, the mutation creates one item even when replayed with the same key, and Vue or Next.js receives the update without a page reload. Health reports the active engine under `services.mysql`. Stop the runtime processes, then run `docker stop reactivecore-guide-mysql` to stop the local database.
 
-**Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. Use the structured interface for portability. Trusted MySQL handlers can opt in to [native MySQL SQL](#use-native-mysql-sql) with explicit tenant predicates. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. Remote MySQL offerings have yet to be validated.
+**Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. Use the structured interface for portability. Trusted MySQL handlers can opt in to [native MySQL SQL](#use-native-mysql-sql) with explicit tenant predicates. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. The [managed MySQL workflow](OPERATIONS.md#validate-a-managed-mysql-84-database) is available for provider validation. The [operations guide](OPERATIONS.md#rehearse-a-mysql-logical-backup-and-upgrade) covers backups and upgrades. Remote provider runs are still pending.
 
 The generated client also exposes version-checked `items.update` and `items.delete`. See [Resolve an offline edit conflict](#resolve-an-offline-edit-conflict).
 

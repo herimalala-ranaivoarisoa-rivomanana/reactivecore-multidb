@@ -1,0 +1,240 @@
+import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { SignJWT } from 'jose';
+import { createConnection } from 'mysql2/promise';
+import { ReactiveCoreClient } from '@reactivecore/client';
+import {
+  checkBilling,
+  checkItemWrites,
+  checkReservations,
+} from './test-fixtures/check-item-writes.mjs';
+
+const exec = promisify(execFile);
+const name = 'cloud-mysql-test';
+const database = 'reactivecore_cloud_mysql_test';
+const origin = 'http://127.0.0.1:4406';
+let stage = 'configuration';
+
+function urlFrom(key, role) {
+  const url = new URL(process.env[key] ?? '');
+  assert.equal(url.protocol, 'mysql:');
+  assert.equal(decodeURIComponent(url.pathname), `/${database}`);
+  assert.equal(url.search, '?ssl=verify-full');
+  assert.ok(url.hostname && !isIP(url.hostname.replace(/^\[|\]$/g, '')));
+  assert.ok(url.username && url.password);
+  if (role) assert.equal(decodeURIComponent(url.username), role);
+  return url;
+}
+
+async function connect(url, ssl = {}) {
+  const direct = new URL(url);
+  direct.search = '';
+  return createConnection({
+    uri: direct.href,
+    connectTimeout: 8000,
+    ssl: { rejectUnauthorized: true, verifyIdentity: true, ...ssl },
+  });
+}
+
+async function inspect(url, forbiddenTable) {
+  const db = await connect(url);
+  try {
+    const [[identity]] = await db.query(
+      'SELECT CURRENT_USER() AS account, VERSION() AS version',
+    );
+    assert.ok(
+      identity.account.startsWith(`${decodeURIComponent(url.username)}@`),
+    );
+    assert.match(identity.version, /^8\.4\./);
+    const [[status]] = await db.query("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
+    assert.ok(status?.Value);
+    if (forbiddenTable) {
+      await assert.rejects(
+        db.query(`SELECT 1 FROM \`${forbiddenTable}\` LIMIT 0`),
+        { code: 'ER_TABLEACCESS_DENIED_ERROR' },
+      );
+    }
+  } finally {
+    await db.end();
+  }
+}
+
+async function run() {
+  const owner = urlFrom('RC_MYSQL_CLOUD_OWNER_URL');
+  const app = urlFrom('RC_MYSQL_CLOUD_APP_URL', 'reactivecore_app');
+  const worker = urlFrom('RC_MYSQL_CLOUD_WORKER_URL', 'reactivecore_worker');
+  assert.ok(
+    !['reactivecore_app', 'reactivecore_worker'].includes(
+      decodeURIComponent(owner.username),
+    ),
+  );
+  assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
+  const redis = process.env.RC_MYSQL_CLOUD_REDIS_URL;
+  assert.ok(redis);
+
+  stage = 'TLS and database roles';
+  await inspect(owner);
+  await assert.rejects(
+    async () => {
+      const connection = await connect(owner, { ca: [] });
+      await connection.end();
+    },
+    (error) => /certificate/i.test(error.message),
+  );
+
+  const project = await mkdtemp(join(tmpdir(), 'rc-cloud-mysql-'));
+  const children = [];
+  const secret = randomBytes(32).toString('hex');
+  const issuer = 'urn:reactivecore:cloud-mysql-validation';
+  const audience = `reactivecore:${name}`;
+  const env = {
+    ...process.env,
+    NODE_ENV: 'development',
+    RC_JWKS_URL: '',
+    RC_JWT_DEV_SECRET: secret,
+    RC_JWT_ISSUER: issuer,
+    RC_JWT_AUDIENCE: audience,
+    RC_HOST: '127.0.0.1',
+    PORT: '4406',
+    REDIS_URL: redis,
+    RC_INVALIDATION_CHANNEL: `reactivecore:cloud-mysql:${randomUUID()}`,
+  };
+  for (const key of Object.keys(env))
+    if (key.startsWith('RC_MYSQL_CLOUD_') || key.startsWith('RC_PROVISION_'))
+      delete env[key];
+
+  function cli(command, ...args) {
+    return exec(
+      process.execPath,
+      ['scripts/reactivecore.mjs', command, project, ...args],
+      {
+        env: { ...env, RC_PROVISION_ADMIN_URL: owner.href },
+        timeout: 30000,
+      },
+    );
+  }
+
+  function start(command, DATABASE_URL) {
+    const processHandle = spawn(
+      process.execPath,
+      ['scripts/reactivecore.mjs', command, project],
+      {
+        env: { ...env, DATABASE_URL },
+        stdio: 'ignore',
+      },
+    );
+    children.push(processHandle);
+    return processHandle;
+  }
+
+  async function makeClient(tenant) {
+    const token = await new SignJWT({
+      tenant_id: tenant,
+      scope: 'query mutation subscribe',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(issuer)
+      .setAudience(audience)
+      .setSubject(randomUUID())
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(new TextEncoder().encode(secret));
+    return new ReactiveCoreClient(origin, () => token);
+  }
+
+  try {
+    stage = 'repeatable provisioning and runtime grants';
+    await cp('scripts/test-fixtures/project', project, { recursive: true });
+    await writeFile(
+      join(project, 'project.json'),
+      JSON.stringify({ name, mysql: { tables: ['items', 'charges'] } }),
+    );
+    await cli('provision');
+    assert.doesNotMatch((await cli('provision')).stdout, /Applied /);
+    await Promise.all([inspect(app, 'rc_project'), inspect(worker, 'items')]);
+
+    stage = 'tenant setup and readiness';
+    const tenant = randomUUID();
+    const otherTenant = randomUUID();
+    await cli('tenant', tenant);
+    await cli('tenant', otherTenant);
+    const api = start('serve', app.href);
+    const signal = AbortSignal.timeout(90000);
+    for (;;) {
+      assert.equal(api.exitCode, null);
+      if (
+        (
+          await fetch(`${origin}/api/health/ready`, { signal }).catch(
+            () => undefined,
+          )
+        )?.ok
+      )
+        break;
+      await setTimeout(200, undefined, { signal });
+    }
+    const client = await makeClient(tenant);
+    const peer = await makeClient(tenant);
+    const other = await makeClient(otherTenant);
+
+    stage = 'idempotency, isolation, reservations, and reactive reporting';
+    const args = { title: 'Cloud MySQL validation item' };
+    const key = randomUUID();
+    const first = await client.mutate('items.create', args, key, signal);
+    assert.deepEqual(await client.mutate('items.create', args, key, signal), {
+      ...first,
+      replayed: true,
+    });
+    await checkItemWrites(client, peer, other, signal);
+    await checkReservations(client, peer, other, signal);
+    await checkBilling(client, other, signal);
+
+    stage = 'worker delivery';
+    const runner = start('worker', worker.href);
+    const db = await connect(worker);
+    try {
+      for (;;) {
+        assert.equal(runner.exitCode, null);
+        const [[row]] = await db.execute(
+          'SELECT COUNT(*) AS count FROM rc_outbox WHERE aggregate_id = ? AND published_at IS NOT NULL',
+          [first.data.id],
+        );
+        if (Number(row.count) > 0) break;
+        await setTimeout(200, undefined, { signal });
+      }
+    } finally {
+      await db.end();
+    }
+    console.log(
+      'Managed MySQL validation passed: TLS, runtime privileges, isolation, replay, SSE, and worker delivery.',
+    );
+  } finally {
+    await Promise.all(
+      children.map(async (child) => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = once(child, 'exit');
+        child.kill('SIGTERM');
+        await exited;
+      }),
+    );
+    await rm(project, { recursive: true, force: true });
+  }
+}
+
+try {
+  await run();
+} catch (error) {
+  const code =
+    typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+      ? ` (${error.code})`
+      : '';
+  console.error(`Managed MySQL validation failed during ${stage}${code}.`);
+  process.exitCode = 1;
+}

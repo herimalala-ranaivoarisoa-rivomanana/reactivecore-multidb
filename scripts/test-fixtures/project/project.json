@@ -6,7 +6,8 @@
       "result": [
         {
           "id": "string",
-          "title": "string"
+          "title": "string",
+          "version": "number"
         }
       ]
     },
@@ -17,7 +18,8 @@
       "result": [
         {
           "id": "string",
-          "title": "string"
+          "title": "string",
+          "version": "number"
         },
         "null"
       ]
@@ -36,16 +38,19 @@
     "items.update": {
       "args": {
         "id": "string",
-        "title": "string"
+        "title": "string",
+        "expectedVersion": "number"
       },
       "result": {
         "id": "string",
-        "title": "string"
+        "title": "string",
+        "version": "number"
       }
     },
     "items.delete": {
       "args": {
-        "id": "string"
+        "id": "string",
+        "expectedVersion": "number"
       },
       "result": {
         "id": "string"

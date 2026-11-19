@@ -81,10 +81,12 @@ The item example uses `ctx.data.list({ table, columns, orderBy, limit })` in que
 | `ctx.data.insert(table, values)` | Inserts application values and supplies `tenant_id`. |
 | `ctx.data.update(table, id, values)` | Updates the tenant's row by ID. Returns `false` if the row is absent. |
 | `ctx.data.delete(table, id)` | Deletes the tenant's row by ID. Returns `false` if the row is absent. |
+| `ctx.data.updateVersioned(table, id, expectedVersion, values)` | Checks the version under a row lock, applies the update, and increments the version in the same transaction. |
+| `ctx.data.deleteVersioned(table, id, expectedVersion)` | Checks the version under a row lock before deleting. |
 
 Use a `tenant_id` column and a stable `id` that uniquely identifies a row within that tenant. Define the constraint, policies, and restricted grants in your migrations. Updates cannot change `id` or `tenant_id`. The item handlers return HTTP 404 when the requested row is outside the caller's tenant or is missing.
 
-For an existing copy of the PostgreSQL item example, add [the write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) and run provisioning again before using the new mutations. On MySQL, apply the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Update the application factory and manifest, regenerate the client, and restart the API.
+For an existing copy of the PostgreSQL item example, add the [write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) and the [version migration](scripts/test-fixtures/project/migrations/003_item_versions.sql), then run provisioning again before using the new mutations. On MySQL, apply the [version migration](scripts/test-fixtures/project/migrations/mysql/002_item_versions.sql) and the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Update the application factory and manifest, regenerate the client, and restart the API.
 
 The read interface automatically filters by the authenticated tenant. The write interface supplies `tenant_id` and rejects values that try to set it. The example still registers its query dependency with `ctx.dependencies.add` and records the mutation with `ctx.recordChange`. Those calls tell the reactive engine what to refresh after a commit.
 
@@ -536,6 +538,25 @@ PostgreSQL applies the mutation transactionally when it reaches the server. For 
 
 On a TypeScript mobile or desktop frontend, reuse the queue with a platform-specific `OfflineStore`, such as a SQLite implementation. Implement its update operation as one atomic read, transition, and write. A frontend in another language can implement the same lifecycle against the HTTP and SSE endpoints.
 
+### Resolve an offline edit conflict
+
+The item example reads `version` in list and detail snapshots. A new item starts at version 1. The example's `items.update` and `items.delete` require `expectedVersion`. Existing applications can opt in by adding a positive integer `version` column and using the versioned methods. These methods return `applied`, `not-found`, or `conflict`. The example maps the last two results to HTTP 404 and HTTP 409.
+
+Suppose two users read item version 7. Alice's update commits first and advances it to version 8. Bob queues an update while offline with `expectedVersion: 7`. When Bob reconnects, the server returns 409 and leaves Alice's edit intact. The same check applies if Bob queued a deletion. An exact replay of Alice's successful mutation returns her original receipt, even if the item has changed again.
+
+```ts
+const { data: current } = await client.query('items.get', { id });
+if (current) {
+  await client.mutate(
+    'items.update',
+    { id, title: 'Renamed item', expectedVersion: current.version },
+    crypto.randomUUID(),
+  );
+}
+```
+
+For offline edits, store the version the user saw together with the draft fields in IndexedDB. Deliver those original arguments with the queue's idempotency key. On `409`, mark the operation as a conflict and show both the draft and the latest snapshot in Vue or Next.js. If the user confirms a new edit, queue it with the current version and a fresh key. If the current snapshot is `null`, show that the item is unavailable. The queue's retries for uncertain delivery continue to use the original key and arguments.
+
 ### Proposed Next.js offline starter
 
 An optional starter would make offline behavior reproducible across new Next.js projects. It would connect the frontend to the SDK's persistent mutation queue and ReactiveCore's PostgreSQL transactions, then verify the integration with an automated browser test. The shared queue and the HTTP/SSE protocol would remain usable from Vue and other frontends.
@@ -579,7 +600,7 @@ Keep MySQL project migrations in `migrations/mysql/` and declare the application
 
 ```sh
 mkdir -p ../my-project/migrations/mysql
-cp scripts/test-fixtures/project/migrations/mysql/001_items.sql ../my-project/migrations/mysql/
+cp scripts/test-fixtures/project/migrations/mysql/*.sql ../my-project/migrations/mysql/
 node --input-type=module <<'JS'
 import { readFileSync, writeFileSync } from 'node:fs';
 const file = '../my-project/project.json';
@@ -605,7 +626,7 @@ GRANT SELECT, UPDATE ON reactivecore_my_project.rc_commit_clock TO 'reactivecore
 GRANT SELECT, INSERT, UPDATE ON reactivecore_my_project.rc_receipts TO 'reactivecore_app'@'%';
 GRANT SELECT, INSERT ON reactivecore_my_project.rc_changes TO 'reactivecore_app'@'%';
 GRANT INSERT ON reactivecore_my_project.rc_outbox TO 'reactivecore_app'@'%';
-GRANT SELECT, INSERT, UPDATE (title), DELETE ON reactivecore_my_project.items TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT, UPDATE (title, version), DELETE ON reactivecore_my_project.items TO 'reactivecore_app'@'%';
 GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
     ON reactivecore_my_project.rc_outbox TO 'reactivecore_worker'@'%';
 SQL
@@ -624,12 +645,7 @@ Repeat steps 6–8. The first query returns an empty list, the mutation creates 
 
 **Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. The MySQL handler context rejects raw `ctx.client` access. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. Remote MySQL offerings have yet to be validated.
 
-The generated client also exposes `items.update` and `items.delete`. Use the ID returned by `items.create` and a fresh idempotency key for each action.
-
-```ts
-await client.mutate('items.update', { id, title: 'Renamed item' }, crypto.randomUUID());
-await client.mutate('items.delete', { id }, crypto.randomUUID());
-```
+The generated client also exposes version-checked `items.update` and `items.delete`. See [Resolve an offline edit conflict](#resolve-an-offline-edit-conflict).
 
 The MySQL CI test uses a disposable database and the same application fixture as PostgreSQL. It checks repeatable provisioning, isolation between tenants, rollback when the outbox write fails, concurrent idempotent replay, SSE delivery and reconnection, tenant-scoped updates and deletes, detail subscriptions, and worker acknowledgement.
 

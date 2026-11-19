@@ -92,7 +92,7 @@ npm run project -- tenant ../my-project "$TENANT_ID"
 (umask 077 && printf 'TENANT_ID=%s\nUSER_ID=%s\n' "$TENANT_ID" "$USER_ID" > ../my-project/.env.identity)
 ```
 
-Expect the CLI to print the core migrations, `Applied project/001_items.sql`, `Applied project/002_item_writes.sql`, and `Provisioned reactivecore_my_project`. Repeat the provision command to verify that it finds the existing project and applies no migration twice. It rejects a first install if the database already contains application objects or additional schemas.
+Expect the CLI to print the core migrations, `Applied project/001_items.sql`, `Applied project/002_item_writes.sql`, `Applied project/003_item_versions.sql`, and `Provisioned reactivecore_my_project`. Repeat the provision command to verify that it finds the existing project and applies no migration twice. It rejects a first install if the database already contains application objects or additional schemas.
 
 ### 4. Run the API and see a live mutation
 

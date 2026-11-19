@@ -219,7 +219,7 @@ async function run() {
       const replay = await client.mutate('items.create', args, key, signal);
       assert.equal(first.replayed, false);
       assert.deepEqual(replay, { ...first, replayed: true });
-      item = first.data;
+      item = { ...first.data, version: 1 };
       assert.deepEqual((await stream.next()).value.data, [item]);
       assert.deepEqual(
         (await otherClient.query('items.list', {}, signal)).data,

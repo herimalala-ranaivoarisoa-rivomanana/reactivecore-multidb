@@ -5,6 +5,7 @@ export default function createApplication({
   ReactiveQuery,
   ReactiveMutation,
   BadRequestException,
+  ConflictException,
   NotFoundException,
 }) {
   function validateList(_principal, args) {
@@ -45,23 +46,43 @@ export default function createApplication({
     return id.toLowerCase();
   }
 
+  function validateVersion(version, max = 2147483647) {
+    if (!Number.isInteger(version) || version < 1 || version > max)
+      throw new BadRequestException('Expected a positive row version in range');
+    return version;
+  }
+
   function validateUpdate(args) {
-    if (!args || typeof args !== 'object' || Object.keys(args).length !== 2)
-      throw new BadRequestException('Expected an item ID and title');
+    if (!args || typeof args !== 'object' || Object.keys(args).length !== 3)
+      throw new BadRequestException(
+        'Expected an item ID, title, and expectedVersion',
+      );
     return {
       id: validateItemId(args.id),
       ...validateCreate({ title: args.title }),
+      expectedVersion: validateVersion(args.expectedVersion, 2147483646),
     };
   }
 
   function validateDelete(args) {
-    if (!args || typeof args !== 'object' || Object.keys(args).length !== 1)
-      throw new BadRequestException('Expected an item ID');
-    return { id: validateItemId(args.id) };
+    if (!args || typeof args !== 'object' || Object.keys(args).length !== 2)
+      throw new BadRequestException('Expected an item ID and expectedVersion');
+    return {
+      id: validateItemId(args.id),
+      expectedVersion: validateVersion(args.expectedVersion),
+    };
   }
 
   function validateGet(_principal, args) {
-    validateDelete(args);
+    if (!args || typeof args !== 'object' || Object.keys(args).length !== 1)
+      throw new BadRequestException('Expected an item ID');
+    validateItemId(args.id);
+  }
+
+  function requireApplied(result) {
+    if (result === 'not-found') throw new NotFoundException('Item not found');
+    if (result === 'conflict')
+      throw new ConflictException('Item version has changed');
   }
 
   class ItemFunctions {
@@ -73,7 +94,11 @@ export default function createApplication({
         table: 'items',
         documentId: id,
       });
-      return ctx.data.get({ table: 'items', id, columns: ['id', 'title'] });
+      return ctx.data.get({
+        table: 'items',
+        id,
+        columns: ['id', 'title', 'version'],
+      });
     }
 
     async list(ctx) {
@@ -84,7 +109,7 @@ export default function createApplication({
       });
       return ctx.data.list({
         table: 'items',
-        columns: ['id', 'title'],
+        columns: ['id', 'title', 'version'],
         orderBy: [
           { column: 'created_at', direction: 'desc' },
           { column: 'id', direction: 'asc' },
@@ -101,26 +126,29 @@ export default function createApplication({
         documentId: id,
         operation: 'insert',
         before: null,
-        after: { title },
+        after: { title, version: 1 },
       });
       return { id, title };
     }
 
-    async update(ctx, { id, title }) {
-      if (!(await ctx.data.update('items', id, { title })))
-        throw new NotFoundException('Item not found');
+    async update(ctx, { id, title, expectedVersion }) {
+      requireApplied(
+        await ctx.data.updateVersioned('items', id, expectedVersion, { title }),
+      );
+      const version = expectedVersion + 1;
       ctx.recordChange({
         table: 'items',
         documentId: id,
         operation: 'update',
-        after: { title },
+        after: { title, version },
       });
-      return { id, title };
+      return { id, title, version };
     }
 
-    async delete(ctx, { id }) {
-      if (!(await ctx.data.delete('items', id)))
-        throw new NotFoundException('Item not found');
+    async delete(ctx, { id, expectedVersion }) {
+      requireApplied(
+        await ctx.data.deleteVersioned('items', id, expectedVersion),
+      );
       ctx.recordChange({
         table: 'items',
         documentId: id,

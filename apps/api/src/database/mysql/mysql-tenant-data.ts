@@ -7,6 +7,7 @@ import { mysqlIdentifier } from '../database-engine.js';
 import {
   matchedTenantRow,
   updateColumns,
+  versionedWrites,
   type GetRow,
   type TenantReader,
   type TenantWriter,
@@ -25,7 +26,8 @@ export function mysqlTenantData(
     return mysqlIdentifier(table);
   }
 
-  return {
+  const data: TenantReader &
+    Pick<TenantWriter, 'insert' | 'update' | 'delete'> = {
     async get<Row extends Record<string, unknown>>({
       table,
       id,
@@ -93,5 +95,16 @@ export function mysqlTenantData(
       );
       return matchedTenantRow(result.affectedRows);
     },
+  };
+
+  return {
+    ...data,
+    ...versionedWrites(data, async (table, id) => {
+      const [rows] = await connection.execute<RowDataPacket[]>(
+        `SELECT version FROM ${tableName(table)} WHERE tenant_id = ? AND id = ? LIMIT 2 FOR UPDATE`,
+        [tenantId, id],
+      );
+      return matchedTenantRow(rows.length) ? rows[0].version : null;
+    }),
   };
 }

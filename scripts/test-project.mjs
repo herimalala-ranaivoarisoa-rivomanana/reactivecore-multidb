@@ -218,6 +218,10 @@ try {
     join(fixture, 'migrations/002_item_writes.sql'),
     join(directory, 'migrations/002_item_writes.sql'),
   );
+  await cp(
+    join(fixture, 'migrations/003_item_versions.sql'),
+    join(directory, 'migrations/003_item_versions.sql'),
+  );
   if (image) {
     await chmod(directory, 0o755);
     await chmod(join(directory, 'migrations'), 0o755);
@@ -226,6 +230,7 @@ try {
       'application.mjs',
       'migrations/001_items.sql',
       'migrations/002_item_writes.sql',
+      'migrations/003_item_versions.sql',
     ]) {
       await chmod(join(directory, file), 0o644);
     }
@@ -317,7 +322,7 @@ void client.mutate('items.create', { title: 42 }, 'id');
     /Applied migrations were changed/,
   );
   await writeFile(migration, original);
-  const failing = join(directory, 'migrations/003_probe.sql');
+  const failing = join(directory, 'migrations/004_probe.sql');
   await writeFile(
     failing,
     'CREATE TABLE public.migration_probe (id int); SELECT missing_column;',
@@ -325,12 +330,12 @@ void client.mutate('items.create', { title: 42 }, 'id');
   if (image) await chmod(failing, 0o644);
   await assert.rejects(
     cli('provision', directory),
-    /Migration failed: project\/003_probe.sql/,
+    /Migration failed: project\/004_probe.sql/,
   );
   await writeFile(failing, 'CREATE TABLE public.migration_probe (id int);');
   assert.match(
     (await cli('provision', directory)).stdout,
-    /Applied project\/003_probe.sql/,
+    /Applied project\/004_probe.sql/,
   );
   await cli('tenant', directory, tenant);
   await cli('tenant', directory, otherTenant);
@@ -412,9 +417,11 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       attempts.find((result) => result.replayed),
       { ...mutation, replayed: true },
     );
-    assert.deepEqual((await stream.next()).value.data, [mutation.data]);
+    assert.deepEqual((await stream.next()).value.data, [
+      { ...mutation.data, version: 1 },
+    ]);
     assert.deepEqual((await client.query('items.list', {}, signal)).data, [
-      mutation.data,
+      { ...mutation.data, version: 1 },
     ]);
   } finally {
     await stream.return();
@@ -508,7 +515,12 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       restoredDatabase,
     ]);
   }
-  await checkItemWrites(client, await clientFor(otherTenant), signal);
+  await checkItemWrites(
+    client,
+    await clientFor(tenant),
+    await clientFor(otherTenant),
+    signal,
+  );
   console.log(
     'CLI verified: generated types, repeatable and atomic migrations, live SDK update, worker acknowledgment, and database restore.',
   );

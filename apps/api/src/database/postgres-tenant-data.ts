@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import {
   matchedTenantRow,
   updateColumns,
+  versionedWrites,
   type TenantReader,
   type TenantWriter,
 } from './tenant-data.js';
@@ -19,7 +20,8 @@ export function postgresTenantData(
   client: PoolClient,
   tenantId: string,
 ): TenantReader & TenantWriter {
-  return {
+  const data: TenantReader &
+    Pick<TenantWriter, 'insert' | 'update' | 'delete'> = {
     async get({ table, id, columns }) {
       if (!columns.length) throw new Error('A get requires columns');
       const { rows } = await client.query(
@@ -85,5 +87,16 @@ export function postgresTenantData(
       );
       return matchedTenantRow(result.rowCount);
     },
+  };
+
+  return {
+    ...data,
+    ...versionedWrites(data, async (table, id) => {
+      const { rows } = await client.query<{ version: number }>(
+        `SELECT version FROM public.${identifier(table)} WHERE tenant_id = $1 AND id = $2 LIMIT 2 FOR UPDATE`,
+        [tenantId, id],
+      );
+      return matchedTenantRow(rows.length) ? rows[0].version : null;
+    }),
   };
 }

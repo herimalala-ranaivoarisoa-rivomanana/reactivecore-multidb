@@ -57,4 +57,60 @@ export interface TenantWriter {
 
   /** Deletes one tenant row by its stable ID. Returns whether it existed. */
   delete(table: string, id: string): Promise<boolean>;
+
+  /** Updates and increments version only when the locked row has the expected version. */
+  updateVersioned(
+    table: string,
+    id: string,
+    expectedVersion: number,
+    values: RowValues,
+  ): Promise<VersionedWrite>;
+
+  /** Deletes only when the locked row has the expected version. */
+  deleteVersioned(
+    table: string,
+    id: string,
+    expectedVersion: number,
+  ): Promise<VersionedWrite>;
+}
+
+export type VersionedWrite = 'applied' | 'not-found' | 'conflict';
+
+/** Builds version-checked writes using a locking read on the same transaction. */
+export function versionedWrites(
+  writer: Pick<TenantWriter, 'update' | 'delete'>,
+  lockVersion: (table: string, id: string) => Promise<number | null>,
+): Pick<TenantWriter, 'updateVersioned' | 'deleteVersioned'> {
+  async function apply(
+    table: string,
+    id: string,
+    expectedVersion: number,
+    write: () => Promise<boolean>,
+  ): Promise<VersionedWrite> {
+    if (
+      !Number.isSafeInteger(expectedVersion) ||
+      expectedVersion < 1 ||
+      expectedVersion > 2147483647
+    )
+      throw new Error('Expected a positive 32-bit row version');
+    const version = await lockVersion(table, id);
+    if (version === null) return 'not-found';
+    if (version !== expectedVersion) return 'conflict';
+    if (!(await write()))
+      throw new Error('Locked tenant row could not be written');
+    return 'applied';
+  }
+
+  return {
+    updateVersioned(table, id, expectedVersion, values) {
+      if (Object.hasOwn(values, 'version') || expectedVersion === 2147483647)
+        throw new Error('A versioned update increments version automatically');
+      return apply(table, id, expectedVersion, () =>
+        writer.update(table, id, { ...values, version: expectedVersion + 1 }),
+      );
+    },
+    deleteVersioned(table, id, expectedVersion) {
+      return apply(table, id, expectedVersion, () => writer.delete(table, id));
+    },
+  };
 }

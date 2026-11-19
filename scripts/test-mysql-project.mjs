@@ -133,7 +133,7 @@ try {
     );
   }
   await admin.query(
-    `GRANT UPDATE (title), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
+    `GRANT UPDATE (title, version), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
   );
   await admin.query(
     `GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
@@ -189,7 +189,7 @@ try {
       results.find(({ replayed }) => replayed),
       { ...committed, replayed: true },
     );
-    item = committed.data;
+    item = { ...committed.data, version: 1 };
     assert.deepEqual((await stream.next()).value.data, [item]);
     assert.deepEqual((await other.query('items.list', {}, signal)).data, []);
   } finally {
@@ -212,7 +212,7 @@ try {
     if (Number(outbox.count) === 1) break;
     await setTimeout(200, undefined, { signal });
   }
-  await checkItemWrites(client, other, signal);
+  await checkItemWrites(client, await clientFor(tenant), other, signal);
   console.log(
     'MySQL verified: provision, tenant isolation, rollback, replay, SSE reconnect, and outbox delivery.',
   );

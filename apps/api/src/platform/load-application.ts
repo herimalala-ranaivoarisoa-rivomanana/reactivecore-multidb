@@ -1,4 +1,9 @@
-import { BadRequestException, Module, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Module,
+  NotFoundException,
+} from '@nestjs/common';
 import { pathToFileURL } from 'node:url';
 import { ReactiveMutation } from '../mutation/reactive-mutation.decorator.js';
 import { ReactiveQuery } from '../reactive/decorators/reactive-query.decorator.js';
@@ -17,6 +22,7 @@ export async function loadApplication(path: string): Promise<Application> {
     ReactiveQuery,
     ReactiveMutation,
     BadRequestException,
+    ConflictException,
     NotFoundException,
   });
   if (

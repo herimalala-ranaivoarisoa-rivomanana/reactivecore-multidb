@@ -52,3 +52,21 @@ jobs:
           node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
       - name: Verify managed PostgreSQL provisioning
         run: RC_TEST_MANAGED_DATABASE=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+      - name: Verify PostgreSQL API replica failover
+        env:
+          RC_REPLICA_LOAD_TEST: '1'
+          RC_LOAD_SUBSCRIBERS: '8'
+          RC_LOAD_WRITES: '12'
+          RC_LOAD_CONCURRENCY: '4'
+          RC_LOAD_GAP_WRITES: '2'
+          RC_PG_MUTATION_CONCURRENCY: '2'
+        run: node --env-file=.env.reactivecore-test scripts/test-project.mjs
+      - name: Verify MySQL API replica failover
+        env:
+          RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}
+          RC_REPLICA_LOAD_TEST: '1'
+          RC_LOAD_SUBSCRIBERS: '8'
+          RC_LOAD_WRITES: '12'
+          RC_LOAD_CONCURRENCY: '4'
+          RC_LOAD_GAP_WRITES: '2'
+        run: node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs

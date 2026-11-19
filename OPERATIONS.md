@@ -222,7 +222,28 @@ Redis transports invalidation notifications. PostgreSQL holds the durable outbox
 
 A mutation can return 503 with `Transaction retry limit exhausted` when PostgreSQL repeatedly aborts the transaction during concurrent writes. Check the server error reason and PostgreSQL logs. The commit clock is a shared row. A serializable transaction may retry when another mutation updates it first.
 
-Reproduce the workload with the [local matrix](README.md#measure-local-mutation-and-sse-load) and compare HTTP latency, SSE latency, and retry exhaustion. Set `RC_PG_MUTATION_CONCURRENCY=2` on the API to try a bounded admission setting in staging. If the response says `PostgreSQL mutation queue is full`, measure queued requests and reduce the incoming write rate before increasing concurrency. This limit is per API process. Keep the same idempotency key when retrying an existing mutation.
+Reproduce the workload with the [local matrix](README.md#measure-local-mutation-and-sse-load) and compare HTTP latency, SSE latency, and retry exhaustion. Set `RC_PG_MUTATION_CONCURRENCY=2` on the API to try a bounded admission setting in staging. If the response says `PostgreSQL mutation queue is full`, measure queued requests and reduce the incoming write rate before increasing concurrency. This limit is per API process. Two replicas configured with a cap of two can together run four write transactions against the shared commit clock. Use the [two-replica load and failover test](README.md#compare-two-postgresql-api-instances) when adjusting replica count, because database connection pools and transaction contention also scale with replicas. Keep the same idempotency key when retrying an existing mutation.
+
+In a local run with 48 subscribers and eight client writers, the three configurations below completed 48 writes each with zero HTTP 503 responses.
+
+| PostgreSQL API processes | Active mutations per process | HTTP mutation p95 | SSE delivery p95 |
+| --- | --- | --- | --- |
+| 1 | 2 | 104 ms | 863 ms |
+| 2 | 2 | 317 ms | 824 ms |
+| 2 | 1 | 201 ms | 938 ms |
+
+These short runs illustrate the effect of changing the aggregate admission limit. Repeat them under the intended traffic and infrastructure before choosing a production limit.
+
+## Check MySQL API failover
+
+Run the [MySQL replica test](README.md#compare-two-mysql-api-instances) to verify that one API can stop while a surviving API continues serving the same database. In a local test with 48 subscribers and eight client writers, both configurations completed 48 writes with zero HTTP 503 responses.
+
+| MySQL API processes | HTTP mutation p95 | SSE delivery p95 |
+| --- | --- | --- |
+| 1 | 37 ms | 792 ms |
+| 2 | 60 ms | 667 ms |
+
+After the first API stopped, the existing SSE subscription caught up through the surviving API in 293 ms. A retry with the original key returned the same mutation receipt across instances. These measurements exercise API failover with one shared database.
 
 ## Monitor and report problems
 

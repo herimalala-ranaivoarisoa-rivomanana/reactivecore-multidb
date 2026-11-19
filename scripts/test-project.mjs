@@ -104,7 +104,10 @@ const owner = `${database}_owner`;
 let ownsRole = false;
 const origin = 'http://127.0.0.1:4403';
 let server;
+let replica;
 let worker;
+const useReplica = process.env.RC_REPLICA_LOAD_TEST === '1';
+const replicaOrigin = 'http://127.0.0.1:4407';
 let ownsDatabase = false;
 const signal = AbortSignal.timeout(60_000);
 const logs = [];
@@ -113,7 +116,7 @@ const image = process.env.RC_TEST_IMAGE;
 const sdkArchive = process.env.RC_TEST_SDK_ARCHIVE;
 const restoredDatabase = `${databaseName}_restore`;
 
-function startRuntime(command, runtimeEnv) {
+function startRuntime(command, runtimeEnv, instance = command) {
   if (!image) {
     return spawn(
       process.execPath,
@@ -145,7 +148,7 @@ function startRuntime(command, runtimeEnv) {
       '--network',
       'host',
       '--name',
-      `${name}-${command}`,
+      `${name}-${instance}`,
       '--mount',
       `type=bind,src=${directory},dst=/project,readonly`,
       ...keys.flatMap((key) => ['--env', key]),
@@ -391,9 +394,9 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       .setExpirationTime('5m')
       .sign(new TextEncoder().encode(tokenKey));
   }
-  async function clientFor(tenantId) {
+  async function clientFor(tenantId, apiOrigin = origin) {
     const token = await tokenFor(tenantId);
-    return new ReactiveCoreClient(origin, () => token);
+    return new ReactiveCoreClient(apiOrigin, () => token);
   }
   const client = await clientFor(tenant);
   const stream = client.subscribe('items.list', {}, signal);
@@ -542,7 +545,25 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
   await checkItemWrites(client, peer, other, signal);
   await checkReservations(client, peer, other, signal);
   await checkBilling(client, other, signal);
-  if (process.env.RC_LOAD_TEST === '1') {
+  if (useReplica) {
+    replica = startRuntime('serve', { ...env, PORT: '4407' }, 'replica');
+    replica.stdout.on('data', (chunk) => logs.push(String(chunk)));
+    replica.stderr.on('data', (chunk) => logs.push(String(chunk)));
+    const readySignal = AbortSignal.timeout(30000);
+    for (;;) {
+      assert.equal(replica.exitCode, null);
+      if (
+        (
+          await fetch(`${replicaOrigin}/api/health/ready`, {
+            signal: readySignal,
+          }).catch(() => undefined)
+        )?.ok
+      )
+        break;
+      await setTimeout(100, undefined, { signal: readySignal });
+    }
+  }
+  if (process.env.RC_LOAD_TEST === '1' || useReplica) {
     const { checkLoad, loadScenarios, loadWriter } =
       await import('./test-fixtures/check-load.mjs');
     for (const scenario of loadScenarios()) {
@@ -554,10 +575,17 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       await outbox.connect();
       try {
         await checkLoad({
-          engine: 'postgres',
-          makeClient: () => clientFor(loadTenant),
-          makeWriter: async () =>
-            loadWriter(origin, await tokenFor(loadTenant)),
+          engine: useReplica ? 'postgres-two-replicas' : 'postgres',
+          makeClient: (_, index) =>
+            clientFor(
+              loadTenant,
+              useReplica && index % 2 ? replicaOrigin : origin,
+            ),
+          makeWriter: async (_, index) =>
+            loadWriter(
+              useReplica && index % 2 ? replicaOrigin : origin,
+              await tokenFor(loadTenant),
+            ),
           scenario,
           findPublished: async (ids) => {
             const { rows } = await outbox.query(
@@ -582,6 +610,26 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       signal: AbortSignal.timeout(90000),
     });
   }
+  if (useReplica) {
+    const { checkReplicaFailover } =
+      await import('./test-fixtures/check-replica-failover.mjs');
+    const failoverTenant = randomUUID();
+    await cli('tenant', directory, failoverTenant);
+    await checkReplicaFailover({
+      engine: 'postgres',
+      Client: ReactiveCoreClient,
+      primary: origin,
+      secondary: replicaOrigin,
+      token: await tokenFor(failoverTenant),
+      stopPrimary: async () => {
+        const closed = new Promise((resolve) => server.once('exit', resolve));
+        if (image)
+          await exec('docker', ['stop', '--time', '5', `${name}-serve`]);
+        else server.kill('SIGTERM');
+        await closed;
+      },
+    });
+  }
   console.log(
     'CLI verified: generated types, repeatable and atomic migrations, live SDK update, worker acknowledgment, and database restore.',
   );
@@ -591,12 +639,12 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
 } finally {
   if (image) {
     await Promise.allSettled(
-      ['serve', 'worker'].map((command) =>
+      ['serve', 'replica', 'worker'].map((command) =>
         exec('docker', ['stop', '--time', '5', `${name}-${command}`]),
       ),
     );
   }
-  for (const child of [worker, server]) {
+  for (const child of [worker, replica, server]) {
     if (!child || child.exitCode !== null || child.signalCode !== null)
       continue;
     const closed = new Promise((resolve) => child.once('exit', resolve));

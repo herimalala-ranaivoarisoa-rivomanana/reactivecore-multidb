@@ -49,6 +49,8 @@ const runtimeUrl = (role) => {
   return url.href;
 };
 const origin = 'http://127.0.0.1:4405';
+const replicaOrigin = 'http://127.0.0.1:4408';
+const useReplica = process.env.RC_REPLICA_LOAD_TEST === '1';
 const issuer = 'urn:reactivecore:mysql-test';
 const audience = `reactivecore:${name}`;
 const jwt = randomBytes(32).toString('hex');
@@ -91,7 +93,7 @@ const runtimeKeys = [
 function dockerArgs(
   command,
   keys,
-  { runtime = image, project = directory } = {},
+  { runtime = image, project = directory, instance = command } = {},
   ...args
 ) {
   return [
@@ -100,7 +102,7 @@ function dockerArgs(
     '--network',
     'host',
     '--name',
-    `${name}-${command}`,
+    `${name}-${instance}`,
     '--mount',
     `type=bind,src=${project},dst=/project,readonly`,
     ...keys.flatMap((key) => ['--env', key]),
@@ -129,18 +131,28 @@ const cli = (command, ...args) => {
       );
 };
 
-function start(command, role, runtime = image, project = directory) {
+function start(
+  command,
+  role,
+  runtime = image,
+  project = directory,
+  { port = env.PORT, instance = command } = {},
+) {
   const options = {
-    env: { ...env, DATABASE_URL: runtimeUrl(role) },
+    env: { ...env, PORT: port, DATABASE_URL: runtimeUrl(role) },
     stdio: ['ignore', 'pipe', 'pipe'],
   };
   const keys =
     command === 'serve' ? runtimeKeys : ['DATABASE_URL', 'REDIS_URL'];
   const child = runtime
-    ? spawn('docker', dockerArgs(command, keys, { runtime, project }), options)
+    ? spawn(
+        'docker',
+        dockerArgs(command, keys, { runtime, project, instance }),
+        options,
+      )
     : spawn(
         process.execPath,
-        ['scripts/reactivecore.mjs', command, directory],
+        ['scripts/reactivecore.mjs', command, project],
         options,
       );
   child.stdout.on('data', (data) => logs.push(data.toString()));
@@ -162,17 +174,17 @@ async function tokenFor(tenantId) {
     .setExpirationTime('5m')
     .sign(new TextEncoder().encode(jwt));
 }
-async function clientFor(tenantId, token) {
+async function clientFor(tenantId, token, apiOrigin = origin) {
   token ??= await tokenFor(tenantId);
-  return new ReactiveCoreClient(origin, () => token);
+  return new ReactiveCoreClient(apiOrigin, () => token);
 }
 
-async function waitReady(api, signal) {
+async function waitReady(api, signal, apiOrigin = origin) {
   for (;;) {
     assert.equal(api.exitCode, null);
     if (
       (
-        await fetch(`${origin}/api/health/ready`, { signal }).catch(
+        await fetch(`${apiOrigin}/api/health/ready`, { signal }).catch(
           () => undefined,
         )
       )?.ok
@@ -537,16 +549,32 @@ try {
     null,
   );
 
-  if (process.env.RC_LOAD_TEST === '1') {
+  if (useReplica) {
+    const replica = start('serve', 'reactivecore_app', image, directory, {
+      port: '4408',
+      instance: 'replica',
+    });
+    await waitReady(replica, AbortSignal.timeout(30000), replicaOrigin);
+  }
+  if (process.env.RC_LOAD_TEST === '1' || useReplica) {
     const { checkLoad, loadScenarios, loadWriter } =
       await import('./test-fixtures/check-load.mjs');
     for (const scenario of loadScenarios()) {
       const loadTenant = randomUUID();
       await cli('tenant', directory, loadTenant);
       await checkLoad({
-        engine: 'mysql',
-        makeClient: () => clientFor(loadTenant),
-        makeWriter: async () => loadWriter(origin, await tokenFor(loadTenant)),
+        engine: useReplica ? 'mysql-two-replicas' : 'mysql',
+        makeClient: (_, index) =>
+          clientFor(
+            loadTenant,
+            undefined,
+            useReplica && index % 2 ? replicaOrigin : origin,
+          ),
+        makeWriter: async (_, index) =>
+          loadWriter(
+            useReplica && index % 2 ? replicaOrigin : origin,
+            await tokenFor(loadTenant),
+          ),
         scenario,
         findPublished: async (ids) => {
           const placeholders = ids.map(() => '?').join(', ');
@@ -570,6 +598,27 @@ try {
     });
   }
   if (mysqlContainer) await checkRestore();
+  if (useReplica) {
+    const { checkReplicaFailover } =
+      await import('./test-fixtures/check-replica-failover.mjs');
+    const failoverTenant = randomUUID();
+    await cli('tenant', directory, failoverTenant);
+    await checkReplicaFailover({
+      engine: 'mysql',
+      Client: ReactiveCoreClient,
+      primary: origin,
+      secondary: replicaOrigin,
+      token: await tokenFor(failoverTenant),
+      stopPrimary: async () => {
+        const closed = once(api, 'exit');
+        if (image)
+          await exec('docker', ['stop', '--time', '5', `${name}-serve`]);
+        else api.kill('SIGTERM');
+        await closed;
+      },
+    });
+  }
+
   console.log(
     'MySQL verified: provision, tenant isolation, rollback, replay, SSE reconnect, and outbox delivery.',
   );
@@ -579,7 +628,7 @@ try {
 } finally {
   if (image || previousImage) {
     await Promise.allSettled(
-      ['serve', 'worker'].map((command) =>
+      ['serve', 'replica', 'worker'].map((command) =>
         exec('docker', ['stop', '--time', '5', `${name}-${command}`]),
       ),
     );

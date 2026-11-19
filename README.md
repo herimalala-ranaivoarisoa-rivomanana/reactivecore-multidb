@@ -782,3 +782,34 @@ RC_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 RC_PG_MUTATION_CONCU
 Set `RC_PG_MUTATION_CONCURRENCY` on each PostgreSQL API process to bound active mutation transactions. The default of 0 leaves admission unrestricted. With a positive limit, up to 64 attempts can wait before acquiring a database connection. A full queue returns HTTP 503 immediately. Retries still use the original idempotency key. The cap applies per process, so rerun the workload at the intended replica count and measure latency as well as retry exhaustion.
 
 Run one engine at a time on the same hardware when comparing results. Increase the number of subscribers or writers one setting at a time. This is a short burst against a single API and worker, with at most 100 items in the query. Sustained load and provider network limits require separate measurements.
+
+
+### Compare two PostgreSQL API instances
+
+With the integration infrastructure running, run these two commands from the repository root. Keep both ports 4403 and 4407 free. Each command creates a fresh disposable project database.
+
+```sh
+RC_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 RC_PG_MUTATION_CONCURRENCY=2 \
+  node --env-file=.env.reactivecore-test scripts/test-project.mjs
+RC_REPLICA_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 RC_PG_MUTATION_CONCURRENCY=2 \
+  node --env-file=.env.reactivecore-test scripts/test-project.mjs
+```
+
+The second command starts two APIs with the same PostgreSQL database, Redis channel, identity configuration, and application. It distributes writes and subscriptions evenly. The cap of two active writes applies to each API, so up to four write transactions may run at once. Compare the reported HTTP 503 count and latency percentiles with the single-instance run.
+
+The test then opens a fresh subscription through a stable local HTTP endpoint, stops its original API, and directs new connections to the surviving API. It verifies that the SDK reconnects without replacing the subscription, that the subscriber catches up to a new write, and that replaying an earlier mutation on the surviving API returns the original receipt. The failover timing includes API shutdown and the subsequent write. Configure an external load balancer and readiness checks for your deployment.
+
+
+### Compare two MySQL API instances
+
+Start the integration infrastructure and a disposable MySQL 8.4 server with the administrative test URL below. Keep ports 4405 and 4408 free.
+
+```sh
+export RC_MYSQL_TEST_URL=mysql://root:local_mysql_admin@127.0.0.1:53306
+RC_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 \
+  node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
+RC_REPLICA_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 \
+  node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
+```
+
+The first run uses one API. The second divides the same load across two API processes connected to one MySQL database and one Redis channel. The PostgreSQL admission limit does not apply to MySQL. The two-API test then exercises the same subscriber recovery and cross-instance mutation replay used in the PostgreSQL test. Both tests cover an API shutdown while the shared database and worker remain available.

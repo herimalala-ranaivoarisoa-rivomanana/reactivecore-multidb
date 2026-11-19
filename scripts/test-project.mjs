@@ -134,6 +134,7 @@ function startRuntime(command, runtimeEnv) {
       'RC_JWT_AUDIENCE',
       'RC_JWT_DEV_SECRET',
       'RC_CORS_ORIGINS',
+      'RC_PG_MUTATION_CONCURRENCY',
     );
   }
   return spawn(
@@ -541,6 +542,36 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
   await checkItemWrites(client, peer, other, signal);
   await checkReservations(client, peer, other, signal);
   await checkBilling(client, other, signal);
+  if (process.env.RC_LOAD_TEST === '1') {
+    const { checkLoad, loadScenarios, loadWriter } =
+      await import('./test-fixtures/check-load.mjs');
+    for (const scenario of loadScenarios()) {
+      const loadTenant = randomUUID();
+      await cli('tenant', directory, loadTenant);
+      const outbox = new pg.Client({
+        connectionString: pgUrl('reactivecore', adminPassword, databaseName),
+      });
+      await outbox.connect();
+      try {
+        await checkLoad({
+          engine: 'postgres',
+          makeClient: () => clientFor(loadTenant),
+          makeWriter: async () =>
+            loadWriter(origin, await tokenFor(loadTenant)),
+          scenario,
+          findPublished: async (ids) => {
+            const { rows } = await outbox.query(
+              'SELECT aggregate_id FROM public.event_outbox WHERE aggregate_id = ANY($1::uuid[]) AND published_at IS NOT NULL',
+              [ids],
+            );
+            return rows.map(({ aggregate_id }) => aggregate_id);
+          },
+        });
+      } finally {
+        await outbox.end();
+      }
+    }
+  }
   if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
     const { checkBrowserConflict } =
       await import('../examples/next-offline-conflicts/check-conflict.mjs');

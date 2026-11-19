@@ -537,6 +537,28 @@ try {
     null,
   );
 
+  if (process.env.RC_LOAD_TEST === '1') {
+    const { checkLoad, loadScenarios, loadWriter } =
+      await import('./test-fixtures/check-load.mjs');
+    for (const scenario of loadScenarios()) {
+      const loadTenant = randomUUID();
+      await cli('tenant', directory, loadTenant);
+      await checkLoad({
+        engine: 'mysql',
+        makeClient: () => clientFor(loadTenant),
+        makeWriter: async () => loadWriter(origin, await tokenFor(loadTenant)),
+        scenario,
+        findPublished: async (ids) => {
+          const placeholders = ids.map(() => '?').join(', ');
+          const [rows] = await admin.execute(
+            `SELECT aggregate_id FROM \`${database}\`.rc_outbox WHERE aggregate_id IN (${placeholders}) AND published_at IS NOT NULL`,
+            ids,
+          );
+          return rows.map(({ aggregate_id }) => aggregate_id);
+        },
+      });
+    }
+  }
   if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
     const { checkBrowserConflict } =
       await import('../examples/next-offline-conflicts/check-conflict.mjs');

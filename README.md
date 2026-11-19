@@ -748,3 +748,37 @@ node --env-file=.env.reactivecore-test scripts/test-project.mjs
 ```
 
 The integration test creates a temporary project and verifies generated types, migrations, idempotency, live updates, worker acknowledgement, and restoration from a PostgreSQL backup.
+
+
+### Measure local mutation and SSE load
+
+Enable the load scenario on the integration test to run against a fresh tenant in its disposable database. Start the [test infrastructure](#verify-the-engine) first. For MySQL, also start a disposable MySQL 8.4 server and set its administrative test URL.
+
+```sh
+RC_LOAD_TEST=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+RC_LOAD_TEST=1 RC_MYSQL_TEST_URL=mysql://root:local_mysql_admin@127.0.0.1:53306 \
+  node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
+```
+
+The default scenario opens 16 subscriptions, creates 40 rows with up to eight concurrent writers, closes all streams, and makes eight additional writes while the streams are down. It then reconnects all subscribers and checks that each first snapshot contains every committed row. It fails if a write is lost, a subscriber misses a row, or a write remains unpublished at the deadline.
+
+The scenario prints JSON with p50, p95, and p99 in milliseconds. Mutation latency includes HTTP round trips and any retry delays. The load client counts HTTP 503 responses and retries up to three times with the original idempotency key. SSE latency is measured from the start of each write until the last subscriber sees it. Worker latency runs from the start of the write until a 50 ms poll observes its publication. Reconnection latency measures the time from reopening streams to their first complete snapshots.
+
+| Setting | Default | Maximum |
+| --- | --- | --- |
+| `RC_LOAD_SUBSCRIBERS` | 16 | 100 |
+| `RC_LOAD_WRITES` | 40 | 80 |
+| `RC_LOAD_CONCURRENCY` | 8 | 20 |
+| `RC_LOAD_GAP_WRITES` | 8 | 20 |
+
+For PostgreSQL, use the matrix to separate subscriber pressure from write contention. The matrix fixes 48 subscribers while testing 2, 4, and 8 concurrent writers. It then compares 16, 32, and 48 subscribers at four writers. Each scenario uses a fresh tenant. The output labels how many 503 responses came from exhausting transaction retries.
+
+```sh
+RC_LOAD_TEST=1 RC_LOAD_MATRIX=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+RC_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 RC_PG_MUTATION_CONCURRENCY=2 \
+  node --env-file=.env.reactivecore-test scripts/test-project.mjs
+```
+
+Set `RC_PG_MUTATION_CONCURRENCY` on each PostgreSQL API process to bound active mutation transactions. The default of 0 leaves admission unrestricted. With a positive limit, up to 64 attempts can wait before acquiring a database connection. A full queue returns HTTP 503 immediately. Retries still use the original idempotency key. The cap applies per process, so rerun the workload at the intended replica count and measure latency as well as retry exhaustion.
+
+Run one engine at a time on the same hardware when comparing results. Increase the number of subscribers or writers one setting at a time. This is a short burst against a single API and worker, with at most 100 items in the query. Sustained load and provider network limits require separate measurements.

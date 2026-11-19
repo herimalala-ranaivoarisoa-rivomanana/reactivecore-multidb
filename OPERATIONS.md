@@ -160,7 +160,13 @@ Prepare an empty, disposable database named `reactivecore_cloud_mysql_test` with
 
 To run locally against a reachable test database, set the same URL variables, set `RC_MYSQL_CLOUD_REDIS_URL`, and point `NODE_EXTRA_CA_CERTS` to the trusted PEM file when required. Build the workspace and run `node scripts/test-cloud-mysql.mjs`.
 
-The PostgreSQL workflow can be run against Neon with the direct endpoint and provider-specific role setup. Both cloud workflows require configured provider instances and credentials in GitHub Secrets.
+### Prepare the provider validation
+
+- **Neon PostgreSQL.** Use a dedicated test branch or project and copy its direct, unpooled endpoint. Create the restricted runtime logins and provisioning owner with SQL under the provider administrator. Check the effective attributes before running the [PostgreSQL workflow](#6-run-the-automated-cloud-validation).
+- **Amazon RDS for MySQL.** Use a dedicated MySQL 8.4 test instance. Configure the runtime accounts from an administrative connection, use the instance endpoint for certificate verification, and trust the appropriate RDS CA. If the endpoint is private, run the workflow on a runner with access to the VPC.
+- **Provider restore drill.** After a successful MySQL run, save the original mutation key, identity, item ID, and commit sequence for a representative write. Restore a provider snapshot to a separate test instance, configure its endpoint and CA, and repeat readiness and replay. Then create a new change with an open SSE subscription and check worker publication on the restored instance.
+
+Both cloud workflows require configured provider instances and credentials in GitHub Secrets. See the [local load scenario](README.md#measure-local-mutation-and-sse-load) for controlled throughput and reconnection measurements.
 
 ## Rehearse a MySQL logical backup and upgrade
 
@@ -211,6 +217,12 @@ Redis transports invalidation notifications. PostgreSQL holds the durable outbox
 3. Load the verified new image. Run its `provision` command with the new project revision and the provisioning environment. Keep applied migration files intact and add new numbered files for schema changes.
 4. Recreate the API and worker containers using the new version and their existing runtime configuration. Check readiness and verify that a new mutation reaches the worker and an SSE subscriber.
 5. For a compatible schema, reuse the previous image and project revision if necessary. For a schema change that is incompatible with the previous release, restore the pre-upgrade backup to an isolated database and cut over after verification. Account for all writes accepted after that backup before choosing a rollback.
+
+## Investigate PostgreSQL mutation contention
+
+A mutation can return 503 with `Transaction retry limit exhausted` when PostgreSQL repeatedly aborts the transaction during concurrent writes. Check the server error reason and PostgreSQL logs. The commit clock is a shared row. A serializable transaction may retry when another mutation updates it first.
+
+Reproduce the workload with the [local matrix](README.md#measure-local-mutation-and-sse-load) and compare HTTP latency, SSE latency, and retry exhaustion. Set `RC_PG_MUTATION_CONCURRENCY=2` on the API to try a bounded admission setting in staging. If the response says `PostgreSQL mutation queue is full`, measure queued requests and reduce the incoming write rate before increasing concurrency. This limit is per API process. Keep the same idempotency key when retrying an existing mutation.
 
 ## Monitor and report problems
 

@@ -56,6 +56,8 @@ const env = {
   NODE_ENV: 'development',
   RC_HOST: '127.0.0.1',
   PORT: '4403',
+  RC_CORS_ORIGINS:
+    process.env.RC_BROWSER_CONFLICT_TEST === '1' ? 'http://127.0.0.1:4173' : '',
   RC_JWKS_URL: '',
   RC_JWT_AUDIENCE: `reactivecore:${name}`,
   RC_JWT_ISSUER: issuer,
@@ -127,6 +129,7 @@ function startRuntime(command, runtimeEnv) {
       'RC_JWT_ISSUER',
       'RC_JWT_AUDIENCE',
       'RC_JWT_DEV_SECRET',
+      'RC_CORS_ORIGINS',
     );
   }
   return spawn(
@@ -360,8 +363,8 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     }
     await setTimeout(100, undefined, { signal });
   }
-  async function clientFor(tenantId) {
-    const token = await new SignJWT({
+  async function tokenFor(tenantId) {
+    return new SignJWT({
       tenant_id: tenantId,
       scope: 'query mutation subscribe',
     })
@@ -372,6 +375,9 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(new TextEncoder().encode(tokenKey));
+  }
+  async function clientFor(tenantId) {
+    const token = await tokenFor(tenantId);
     return new ReactiveCoreClient(origin, () => token);
   }
   const client = await clientFor(tenant);
@@ -521,6 +527,16 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     await clientFor(otherTenant),
     signal,
   );
+  if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
+    const { checkBrowserConflict } =
+      await import('../examples/next-offline-conflicts/check-conflict.mjs');
+    await checkBrowserConflict({
+      origin,
+      client,
+      tokens: [await tokenFor(tenant), await tokenFor(tenant)],
+      signal: AbortSignal.timeout(90000),
+    });
+  }
   console.log(
     'CLI verified: generated types, repeatable and atomic migrations, live SDK update, worker acknowledgment, and database restore.',
   );

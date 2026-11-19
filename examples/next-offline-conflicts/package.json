@@ -1,0 +1,19 @@
+{
+  "name": "reactivecore-next-offline-conflicts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "start": "serve out -l tcp://127.0.0.1:4173 --no-clipboard"
+  },
+  "dependencies": {
+    "@reactivecore/client": "file:../../packages/client",
+    "next": "16.4.6",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1",
+    "serve": "14.2.6"
+  }
+}

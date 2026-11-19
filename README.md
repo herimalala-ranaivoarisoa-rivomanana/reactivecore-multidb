@@ -10,7 +10,7 @@ This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend
 
 **Release status.** Run ReactiveCore MultiDB from source. The upstream alpha is available from the original ReactiveCore repository.
 
-[Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
+[Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Next.js conflict example](#run-the-nextjs-offline-conflict-example) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
 ### Storage adapter progress
 
@@ -557,23 +557,35 @@ if (current) {
 
 For offline edits, store the version the user saw together with the draft fields in IndexedDB. Deliver those original arguments with the queue's idempotency key. On `409`, mark the operation as a conflict and show both the draft and the latest snapshot in Vue or Next.js. If the user confirms a new edit, queue it with the current version and a fresh key. If the current snapshot is `null`, show that the item is unavailable. The queue's retries for uncertain delivery continue to use the original key and arguments.
 
-### Proposed Next.js offline starter
+### Run the Next.js offline conflict example
 
-An optional starter would make offline behavior reproducible across new Next.js projects. It would connect the frontend to the SDK's persistent mutation queue and ReactiveCore's PostgreSQL transactions, then verify the integration with an automated browser test. The shared queue and the HTTP/SSE protocol would remain usable from Vue and other frontends.
+The [example](examples/next-offline-conflicts) combines the IndexedDB queue, version-checked item mutations, SSE, and a service worker for reloading the app shell offline. It connects to the same backend on PostgreSQL or MySQL.
 
-| Benefit | What the starter would provide |
-| --- | --- |
-| Faster setup | Run the app, create a task offline, reload the page, and resume synchronization when the connection returns. |
-| Consistent behavior across projects | Persist operations in IndexedDB, isolate the queue by user and tenant, and support cancellation before the first send. |
-| Safe retries after a disconnect | If PostgreSQL commits a mutation and the response is lost, retry with the original idempotency key so the server can return the stored result without applying the write again. |
-| Regression coverage | Run the complete offline scenario in a browser after updates to Next.js, the SDK, or the backend. |
-| Executable example | Follow one action from the form and IndexedDB through the PostgreSQL transaction to the confirmed view delivered by SSE. |
+1. Start the API and worker using the PostgreSQL setup or the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Add `http://127.0.0.1:4173` to `RC_CORS_ORIGINS` before starting the API. Use the item schema and handlers from this repository so reads include a version.
+2. From the repository root, build and serve the static Next.js example.
 
-Each application decides how to present pending operations. A task can appear immediately as a provisional row. A sales app can show a pending sale and keep the last confirmed stock on screen. If two devices sell the last unit offline, the server can accept one sale and reject the other during synchronization when the mutation checks and updates stock in the same transaction. **The local write records the intent. The server transaction validates the business operation.**
+   ```sh
+   npm run build
+   npm ci --prefix examples/next-offline-conflicts
+   npm run build --prefix examples/next-offline-conflicts
+   npm run start --prefix examples/next-offline-conflicts
+   ```
 
-The starter's test should state which cache behaviors it covers. Reloading the entry screen, viewing previously fetched data, and opening a page that has never been visited are separate scenarios.
+3. Create an item using the mutation in step 7. Copy the item ID from its response. Generate two development tokens with distinct `sub` values and the same `tenant_id` using step 6. Keep the first token, replace `USER_ID` in `.env.identity` with a new UUID, then rerun step 6 for the second token. Open `http://127.0.0.1:4173` in two browser profiles and connect both to the same item using the corresponding tokens. Wait for **Offline reload ready** and the first server snapshot in the first profile.
+4. Put the first profile offline and queue an edit. Reload while still offline, then enter the same API URL, item ID, and previously verified token. The queued draft should still appear. In the second profile, edit the item while online.
+5. Reconnect the first profile. The queued edit should show `conflict` next to the latest server title and version. Click **Discard draft** to keep the server version, or edit the draft and select **Submit against latest version**. Resubmission creates a new queue operation with a new key. If the item is unavailable, the example disables resubmission.
 
-The first automated test should open the app online, go offline, create two operations, reload, and cancel one before reconnecting. After reconnecting, it should verify on the server that the retained operation committed exactly once and the cancelled operation created no row. The browser should receive the confirmed result through SSE.
+The example keeps the token in memory. A token fingerprint lets the browser find its previously verified identity after an offline reload. Local snapshots and queue records are scoped by identity, and the example revalidates the session before sending queued operations. Use separate browser profiles to test two users. Serve the example over HTTPS if deploying it outside loopback so the browser can use its service worker and Web Crypto.
+
+To run the Chromium scenario locally, start the example as above, then run these commands from the repository root. The MySQL command expects a disposable MySQL 8.4 server with administrative credentials. The workflow runs the same scenario on both engines.
+
+```sh
+(cd examples/next-offline-conflicts && npx playwright install chromium)
+node scripts/test-infra.mjs
+RC_BROWSER_CONFLICT_TEST=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+RC_BROWSER_CONFLICT_TEST=1 RC_MYSQL_TEST_URL=mysql://root:local_mysql_admin@127.0.0.1:53306 \
+  node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
+```
 
 ## Run the same project on MySQL 8.4
 

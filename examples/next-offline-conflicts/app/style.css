@@ -1,0 +1,10 @@
+body { background: #f8fafc; color: #172033; font: 16px system-ui, sans-serif; margin: 0; }
+main { max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }
+section, form, article { display: grid; gap: .65rem; }
+section { margin-block: 1.5rem; }
+article { border: 1px solid #cbd5e1; background: white; border-radius: .5rem; padding: 1rem; }
+form { max-width: 35rem; }
+input, button { font: inherit; padding: .55rem; border: 1px solid #64748b; border-radius: .25rem; }
+button { width: fit-content; background: #dceafd; color: #172033; cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+p, h2, h3 { margin: .25rem 0; }

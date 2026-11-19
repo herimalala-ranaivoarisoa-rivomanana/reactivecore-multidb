@@ -54,6 +54,8 @@ const env = {
   RC_JWT_AUDIENCE: audience,
   RC_HOST: '127.0.0.1',
   PORT: '4405',
+  RC_CORS_ORIGINS:
+    process.env.RC_BROWSER_CONFLICT_TEST === '1' ? 'http://127.0.0.1:4173' : '',
   REDIS_URL: redisUrl,
 };
 delete env.RC_MYSQL_TEST_URL;
@@ -79,8 +81,8 @@ function start(command, role) {
   return child;
 }
 
-async function clientFor(tenantId) {
-  const token = await new SignJWT({
+async function tokenFor(tenantId) {
+  return new SignJWT({
     tenant_id: tenantId,
     scope: 'query mutation subscribe',
   })
@@ -91,6 +93,9 @@ async function clientFor(tenantId) {
     .setIssuedAt()
     .setExpirationTime('5m')
     .sign(new TextEncoder().encode(jwt));
+}
+async function clientFor(tenantId) {
+  const token = await tokenFor(tenantId);
   return new ReactiveCoreClient(origin, () => token);
 }
 
@@ -213,6 +218,16 @@ try {
     await setTimeout(200, undefined, { signal });
   }
   await checkItemWrites(client, await clientFor(tenant), other, signal);
+  if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
+    const { checkBrowserConflict } =
+      await import('../examples/next-offline-conflicts/check-conflict.mjs');
+    await checkBrowserConflict({
+      origin,
+      client,
+      tokens: [await tokenFor(tenant), await tokenFor(tenant)],
+      signal: AbortSignal.timeout(90000),
+    });
+  }
   console.log(
     'MySQL verified: provision, tenant isolation, rollback, replay, SSE reconnect, and outbox delivery.',
   );

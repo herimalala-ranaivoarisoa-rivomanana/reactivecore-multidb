@@ -360,6 +360,33 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     assert.deepEqual((await stream.next()).value.data, []);
     const key = randomUUID();
     const input = { title: 'Standalone project' };
+    // Reject the outbox insert after the handler and journal have already written.
+    const fault = new pg.Client({
+      connectionString: pgUrl('reactivecore', adminPassword, databaseName),
+    });
+    await fault.connect();
+    try {
+      await fault.query(
+        "ALTER TABLE public.event_outbox ADD CONSTRAINT reject_test_event CHECK (event_type <> 'reactive.changed')",
+      );
+      try {
+        await assert.rejects(
+          client.mutate('items.create', input, key, signal),
+          { status: 500 },
+        );
+        assert.deepEqual(await client.query('items.list', {}, signal), {
+          data: [],
+          seq: '0',
+        });
+      } finally {
+        await fault.query(
+          'ALTER TABLE public.event_outbox DROP CONSTRAINT reject_test_event',
+        );
+      }
+    } finally {
+      await fault.end();
+    }
+
     const attempts = await Promise.all([
       client.mutate('items.create', input, key, signal),
       client.mutate('items.create', input, key, signal),

@@ -7,10 +7,12 @@ import {
 import { createHash, randomUUID, randomInt } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { isIdempotencyKey } from './idempotency-key.js';
-import type { PoolClient } from 'pg';
-import { DatabaseService } from '../database/database.service.js';
 import type { JournalChange } from '../reactive/changelog/change-log.service.js';
-import { MutationCommitService } from './mutation-commit.service.js';
+import {
+  MutationStore,
+  type MutationScope,
+  type MutationTransaction,
+} from './mutation-store.js';
 import { MutationRegistryService } from './mutation-registry.service.js';
 import type { MutationRequest, MutationResult } from './mutation.types.js';
 
@@ -51,23 +53,22 @@ export class MutationEngineService {
   }
 
   constructor(
-    private readonly database: DatabaseService,
+    private readonly store: MutationStore,
     private readonly registry: MutationRegistryService,
-    private readonly commit: MutationCommitService,
   ) {}
 
   /** Retries the entire transaction on serialization failures and deadlocks. */
   async runSerializable<T>(
-    tenantId: string,
-    run: (client: PoolClient) => Promise<T>,
+    scope: MutationScope,
+    run: (transaction: MutationTransaction) => Promise<T>,
   ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.database.serializableTenantTransaction(tenantId, run);
+        return await this.store.transaction(scope, run);
       } catch (error) {
-        const code = (error as { code?: string } | null)?.code;
-        if (code !== '40001' && code !== '40P01') throw error;
-        if (code === '40001') this.metrics.serializationFailures++;
+        const reason = this.store.retryReason(error);
+        if (!reason) throw error;
+        if (reason === 'serialization') this.metrics.serializationFailures++;
         else this.metrics.deadlocks++;
         if (attempt >= 5) {
           this.metrics.exhausted++;
@@ -98,45 +99,23 @@ export class MutationEngineService {
     const hash = createHash('sha256')
       .update(canonicalJson(validated))
       .digest('hex');
-    const key = [
-      principal.tenantId,
-      principal.userId,
+    const scope: MutationScope = {
+      tenantId: principal.tenantId,
+      principalId: principal.userId,
       name,
-      idempotencyKey.toLowerCase(),
-    ];
+      idempotencyKey: idempotencyKey.toLowerCase(),
+    };
 
-    return this.runSerializable(principal.tenantId, async (client) => {
-      await client.query(
-        "SELECT set_config('app.principal_id', $1::uuid::text, true)",
-        [principal.userId],
-      );
-      const reserved = await client.query(
-        `INSERT INTO mutation_execution_receipts
-           (tenant_id, principal_id, mutation_name, idempotency_key, request_hash)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-        [...key, hash],
-      );
-      if (reserved.rowCount === 0) {
-        const {
-          rows: [receipt],
-        } = await client.query<{
-          request_hash: string;
-          response: unknown;
-          commit_seq: string | null;
-        }>(
-          `SELECT request_hash, response, commit_seq::text FROM mutation_execution_receipts
-           WHERE tenant_id = $1 AND principal_id = $2 AND mutation_name = $3 AND idempotency_key = $4`,
-          key,
-        );
-        if (!receipt?.commit_seq)
-          throw new Error('Incomplete mutation receipt');
-        if (receipt.request_hash !== hash)
+    return this.runSerializable(scope, async (transaction) => {
+      const receipt = await transaction.reserve(hash);
+      if (receipt) {
+        if (receipt.requestHash !== hash)
           throw new ConflictException(
             'Idempotency key reused with different arguments',
           );
         return {
           data: receipt.response,
-          commitSeq: receipt.commit_seq,
+          commitSeq: receipt.commitSeq,
           replayed: true,
         };
       }
@@ -145,7 +124,7 @@ export class MutationEngineService {
       const data = await handler.execute(
         {
           principal,
-          client,
+          client: transaction.client,
           recordChange: (change) =>
             changes.push({ ...structuredClone(change), eventId: randomUUID() }),
         },
@@ -154,18 +133,7 @@ export class MutationEngineService {
       const response = JSON.stringify(data);
       if (response === undefined)
         throw new Error('A mutation must return a JSON result');
-      const commitSeq = await this.commit.commitChanges(
-        client,
-        principal.tenantId,
-        changes,
-      );
-      const completed = await client.query(
-        `UPDATE mutation_execution_receipts SET response = $5::jsonb, commit_seq = $6
-         WHERE tenant_id = $1 AND principal_id = $2 AND mutation_name = $3 AND idempotency_key = $4`,
-        [...key, response, commitSeq],
-      );
-      if (completed.rowCount !== 1)
-        throw new Error('Mutation receipt could not be completed');
+      const commitSeq = await transaction.complete(response, changes);
       return { data: JSON.parse(response), commitSeq, replayed: false };
     });
   }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
@@ -68,6 +68,8 @@ async function inspect(url, forbiddenTable) {
 }
 
 async function run() {
+  const mode = process.env.RC_MYSQL_CLOUD_MODE || 'validate';
+  assert.ok(['validate', 'checkpoint', 'restore'].includes(mode));
   const owner = urlFrom('RC_MYSQL_CLOUD_OWNER_URL');
   const app = urlFrom('RC_MYSQL_CLOUD_APP_URL', 'reactivecore_app');
   const worker = urlFrom('RC_MYSQL_CLOUD_WORKER_URL', 'reactivecore_worker');
@@ -79,6 +81,31 @@ async function run() {
   assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
   const redis = process.env.RC_MYSQL_CLOUD_REDIS_URL;
   assert.ok(redis);
+
+  const endpoint = createHash('sha256')
+    .update(
+      `${owner.hostname.toLowerCase().replace(/\.$/, '')}:${owner.port || '3306'}`,
+    )
+    .digest('hex');
+  assert.equal(app.host, owner.host);
+  assert.equal(worker.host, owner.host);
+  const checkpointPath = process.env.RC_MYSQL_CLOUD_CHECKPOINT_FILE;
+  assert.ok(mode !== 'checkpoint' || checkpointPath);
+  const checkpoint =
+    mode === 'restore'
+      ? JSON.parse(process.env.RC_MYSQL_CLOUD_CHECKPOINT_JSON ?? '')
+      : undefined;
+  if (checkpoint) {
+    assert.equal(checkpoint.version, 1);
+    stage = 'restore checkpoint and target endpoint';
+    assert.match(checkpoint.source, /^[a-f0-9]{64}$/);
+    assert.notEqual(checkpoint.source, endpoint);
+    for (const field of ['tenant', 'subject', 'key']) {
+      assert.match(checkpoint[field], /^[a-f0-9-]{36}$/);
+    }
+    assert.equal(checkpoint.receipt.replayed, false);
+  }
+  assert.ok(mode !== 'restore' || checkpoint);
 
   stage = 'TLS and database roles';
   await inspect(owner);
@@ -135,7 +162,7 @@ async function run() {
     return processHandle;
   }
 
-  async function makeClient(tenant) {
+  async function makeClient(tenant, subject = randomUUID()) {
     const token = await new SignJWT({
       tenant_id: tenant,
       scope: 'query mutation subscribe',
@@ -143,7 +170,7 @@ async function run() {
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuer(issuer)
       .setAudience(audience)
-      .setSubject(randomUUID())
+      .setSubject(subject)
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(new TextEncoder().encode(secret));
@@ -157,15 +184,20 @@ async function run() {
       join(project, 'project.json'),
       JSON.stringify({ name, mysql: { tables: ['items', 'charges'] } }),
     );
-    await cli('provision');
-    assert.doesNotMatch((await cli('provision')).stdout, /Applied /);
+    if (!checkpoint) {
+      await cli('provision');
+      assert.doesNotMatch((await cli('provision')).stdout, /Applied /);
+    }
     await Promise.all([inspect(app, 'rc_project'), inspect(worker, 'items')]);
 
     stage = 'tenant setup and readiness';
-    const tenant = randomUUID();
+    const tenant = checkpoint?.tenant ?? randomUUID();
     const otherTenant = randomUUID();
-    await cli('tenant', tenant);
-    await cli('tenant', otherTenant);
+    const subject = checkpoint?.subject ?? randomUUID();
+    if (!checkpoint) {
+      await cli('tenant', tenant);
+      await cli('tenant', otherTenant);
+    }
     const api = start('serve', app.href);
     const signal = AbortSignal.timeout(90000);
     for (;;) {
@@ -180,31 +212,97 @@ async function run() {
         break;
       await setTimeout(200, undefined, { signal });
     }
-    const client = await makeClient(tenant);
-    const peer = await makeClient(tenant);
-    const other = await makeClient(otherTenant);
+    const client = await makeClient(tenant, subject);
+    const runner = start('worker', worker.href);
+    let publishedId;
+    let checkpointRecord;
 
-    stage = 'idempotency, isolation, reservations, and reactive reporting';
-    const args = { title: 'Cloud MySQL validation item' };
-    const key = randomUUID();
-    const first = await client.mutate('items.create', args, key, signal);
-    assert.deepEqual(await client.mutate('items.create', args, key, signal), {
-      ...first,
-      replayed: true,
-    });
-    await checkItemWrites(client, peer, other, signal);
-    await checkReservations(client, peer, other, signal);
-    await checkBilling(client, other, signal);
+    if (checkpoint) {
+      stage = 'restored mutation receipt';
+      const replay = await client.mutate(
+        'items.create',
+        checkpoint.args,
+        checkpoint.key,
+        signal,
+      );
+      assert.deepEqual(replay, { ...checkpoint.receipt, replayed: true });
+      stage = 'restored rows and new SSE delivery';
+      const controller = new AbortController();
+      const stream = client.subscribe(
+        'items.list',
+        {},
+        AbortSignal.any([signal, controller.signal]),
+      );
+      try {
+        const before = (await stream.next()).value.data;
+        assert.equal(
+          before.filter(({ id }) => id === replay.data.id).length,
+          1,
+        );
+        const fresh = await client.mutate(
+          'items.create',
+          { title: 'Managed MySQL restored instance probe' },
+          randomUUID(),
+          signal,
+        );
+        assert.equal(fresh.replayed, false);
+        assert.ok(BigInt(fresh.commitSeq) > BigInt(replay.commitSeq));
+        for (;;) {
+          const snapshot = await stream.next();
+          assert.equal(snapshot.done, false);
+          if (BigInt(snapshot.value.seq) < BigInt(fresh.commitSeq)) continue;
+          assert.equal(
+            snapshot.value.data.filter(({ id }) => id === fresh.data.id).length,
+            1,
+          );
+          break;
+        }
+        publishedId = fresh.data.id;
+      } finally {
+        controller.abort();
+        await stream.return();
+      }
+    } else {
+      const peer = await makeClient(tenant);
+      const other = await makeClient(otherTenant);
+      stage = 'idempotency, isolation, reservations, and reactive reporting';
+      const args = { title: 'Cloud MySQL validation item' };
+      const key = randomUUID();
+      const receipt = await client.mutate('items.create', args, key, signal);
+      assert.deepEqual(await client.mutate('items.create', args, key, signal), {
+        ...receipt,
+        replayed: true,
+      });
+      await checkItemWrites(client, peer, other, signal);
+      await checkReservations(client, peer, other, signal);
+      await checkBilling(client, other, signal);
+      publishedId = receipt.data.id;
+      if (mode === 'checkpoint') {
+        stage = 'checkpoint mutation';
+        const args = { title: 'Managed MySQL snapshot checkpoint' };
+        const key = randomUUID();
+        const receipt = await client.mutate('items.create', args, key, signal);
+        publishedId = receipt.data.id;
+        checkpointRecord = {
+          version: 1,
+          source: endpoint,
+          tenant,
+          subject,
+          key,
+          args,
+          receipt,
+        };
+      }
+    }
 
     stage = 'worker delivery';
-    const runner = start('worker', worker.href);
     const db = await connect(worker);
     try {
       for (;;) {
         assert.equal(runner.exitCode, null);
         const [[row]] = await db.execute(
           'SELECT COUNT(*) AS count FROM rc_outbox WHERE aggregate_id = ? AND published_at IS NOT NULL',
-          [first.data.id],
+          [publishedId],
         );
         if (Number(row.count) > 0) break;
         await setTimeout(200, undefined, { signal });
@@ -212,9 +310,14 @@ async function run() {
     } finally {
       await db.end();
     }
-    console.log(
-      'Managed MySQL validation passed: TLS, runtime privileges, isolation, replay, SSE, and worker delivery.',
-    );
+    if (mode === 'checkpoint') {
+      stage = 'checkpoint output';
+      await writeFile(checkpointPath, JSON.stringify(checkpointRecord), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    }
+    console.log(`Managed MySQL ${mode} passed.`);
   } finally {
     await Promise.all(
       children.map(async (child) => {

@@ -825,3 +825,7 @@ RC_DATABASE_OUTAGE_TEST=1 RC_MYSQL_TEST_URL=mysql://root:local_mysql_admin@127.0
 ```
 
 The test interrupts the API and worker TCP connections to the database. It drops the response to a committed mutation and submits another mutation during the outage. After reconnecting, it retries with the original idempotency keys, checks that exactly three rows are visible on the existing SSE subscription, and waits for the worker to publish the corresponding outbox records. Each run prints a JSON line with recovery timings. GitHub Actions runs this scenario for both engines.
+
+### Verify a managed MySQL snapshot
+
+The managed MySQL workflow can record a synthetic mutation before an RDS snapshot, then verify the restored instance. It compares the original idempotency receipt and checks SSE and outbox delivery for a new mutation. Follow the [snapshot drill in the operations guide](OPERATIONS.md#verify-a-restored-mysql-snapshot).

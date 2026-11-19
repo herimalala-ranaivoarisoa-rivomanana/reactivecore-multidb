@@ -164,9 +164,28 @@ To run locally against a reachable test database, set the same URL variables, se
 
 - **Neon PostgreSQL.** Use a dedicated test branch or project and copy its direct, unpooled endpoint. Create the restricted runtime logins and provisioning owner with SQL under the provider administrator. Check the effective attributes before running the [PostgreSQL workflow](#6-run-the-automated-cloud-validation).
 - **Amazon RDS for MySQL.** Use a dedicated MySQL 8.4 test instance. Configure the runtime accounts from an administrative connection, use the instance endpoint for certificate verification, and trust the appropriate RDS CA. If the endpoint is private, run the workflow on a runner with access to the VPC.
-- **Provider restore drill.** After a successful MySQL run, save the original mutation key, identity, item ID, and commit sequence for a representative write. Restore a provider snapshot to a separate test instance, configure its endpoint and CA, and repeat readiness and replay. Then create a new change with an open SSE subscription and check worker publication on the restored instance.
+- **Provider restore drill.** Use the [managed MySQL snapshot procedure](#verify-a-restored-mysql-snapshot) after validating the source instance.
 
 Both cloud workflows require configured provider instances and credentials in GitHub Secrets. See the [local load scenario](README.md#measure-local-mutation-and-sse-load) for controlled throughput and reconnection measurements.
+
+## Verify a restored MySQL snapshot
+
+Use a disposable RDS instance and synthetic data. The workflow artifact contains only synthetic mutation metadata and a hash of the source endpoint. Users who can read the repository can download the artifact. The checkpoint file contains no credentials.
+
+1. Run **Validate managed MySQL** in `checkpoint` mode against the source test instance. Download the `mysql-restore-checkpoint` artifact after the run succeeds.
+2. Take the provider snapshot after the checkpoint run finishes. Restore it to a separate MySQL 8.4 test instance and make the new endpoint reachable from the runner.
+3. Create the `cloud-mysql-restore` GitHub environment. Set the three MySQL URL secrets and CA using the restored endpoint and set `RC_MYSQL_CLOUD_CHECKPOINT_JSON` to the contents of the downloaded JSON file. Keep the source environment configured separately.
+4. Run **Validate managed MySQL** in `restore` mode. The script checks the restored instance's TLS and runtime grants, replays the original mutation and compares its receipt, then verifies that a new write appears in SSE and has a published outbox record. It rejects the checkpoint's source endpoint and uses the schema from the snapshot.
+
+On a workstation with network access to both instances, use the same URL, Redis and CA settings as the cloud validation. Run the first command with the source URLs. Create and restore the snapshot, then switch to the restored URLs before the second command.
+
+```sh
+RC_MYSQL_CLOUD_MODE=checkpoint RC_MYSQL_CLOUD_CHECKPOINT_FILE=./mysql-checkpoint.json \
+  node scripts/test-cloud-mysql.mjs
+
+RC_MYSQL_CLOUD_MODE=restore RC_MYSQL_CLOUD_CHECKPOINT_JSON="$(cat ./mysql-checkpoint.json)" \
+  node scripts/test-cloud-mysql.mjs
+```
 
 ## Rehearse a MySQL logical backup and upgrade
 

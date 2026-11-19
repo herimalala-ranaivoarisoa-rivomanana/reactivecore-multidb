@@ -2,6 +2,15 @@ name: Validate managed MySQL
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate a test instance, create a checkpoint, or verify a restore
+        type: choice
+        default: validate
+        options:
+          - validate
+          - checkpoint
+          - restore
 
 permissions:
   contents: read
@@ -14,7 +23,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 12
-    environment: cloud-mysql-test
+    environment: ${{ inputs.mode == 'restore' && 'cloud-mysql-restore' || 'cloud-mysql-test' }}
     services:
       redis:
         image: redis:7.4
@@ -31,6 +40,9 @@ jobs:
       - run: npm run build
       - name: Verify TLS, privileges, and reactive writes
         env:
+          RC_MYSQL_CLOUD_MODE: ${{ inputs.mode }}
+          RC_MYSQL_CLOUD_CHECKPOINT_FILE: ${{ runner.temp }}/reactivecore-mysql-checkpoint.json
+          RC_MYSQL_CLOUD_CHECKPOINT_JSON: ${{ secrets.RC_MYSQL_CLOUD_CHECKPOINT_JSON }}
           RC_MYSQL_CLOUD_OWNER_URL: ${{ secrets.RC_MYSQL_CLOUD_OWNER_URL }}
           RC_MYSQL_CLOUD_APP_URL: ${{ secrets.RC_MYSQL_CLOUD_APP_URL }}
           RC_MYSQL_CLOUD_WORKER_URL: ${{ secrets.RC_MYSQL_CLOUD_WORKER_URL }}
@@ -46,3 +58,11 @@ jobs:
           fi
           unset RC_MYSQL_CLOUD_CA_PEM
           node scripts/test-cloud-mysql.mjs
+      - name: Save the synthetic mutation checkpoint
+        if: inputs.mode == 'checkpoint'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-restore-checkpoint
+          path: ${{ runner.temp }}/reactivecore-mysql-checkpoint.json
+          if-no-files-found: error
+          retention-days: 7

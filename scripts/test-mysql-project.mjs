@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout } from 'node:timers/promises';
@@ -60,21 +60,69 @@ const env = {
 };
 delete env.RC_MYSQL_TEST_URL;
 delete env.RC_MYSQL_TEST_ROLE_PASSWORD;
-const cli = (...args) =>
-  exec(process.execPath, ['scripts/reactivecore.mjs', ...args], {
+const image = process.env.RC_TEST_IMAGE;
+const runtimeKeys = [
+  'DATABASE_URL',
+  'REDIS_URL',
+  'NODE_ENV',
+  'RC_HOST',
+  'PORT',
+  'RC_JWT_ISSUER',
+  'RC_JWT_AUDIENCE',
+  'RC_JWT_DEV_SECRET',
+  'RC_CORS_ORIGINS',
+];
+
+function dockerArgs(command, keys, ...args) {
+  return [
+    'run',
+    '--rm',
+    '--network',
+    'host',
+    '--name',
+    `${name}-${command}`,
+    '--mount',
+    `type=bind,src=${directory},dst=/project,readonly`,
+    ...keys.flatMap((key) => ['--env', key]),
+    image,
+    command,
+    '/project',
+    ...args,
+  ];
+}
+
+const cli = (command, ...args) => {
+  const options = {
     env: { ...env, RC_PROVISION_ADMIN_URL: adminUrl },
     timeout: 20000,
-  });
+  };
+  return image
+    ? exec(
+        'docker',
+        dockerArgs(command, ['RC_PROVISION_ADMIN_URL'], ...args.slice(1)),
+        options,
+      )
+    : exec(
+        process.execPath,
+        ['scripts/reactivecore.mjs', command, ...args],
+        options,
+      );
+};
 
 function start(command, role) {
-  const child = spawn(
-    process.execPath,
-    ['scripts/reactivecore.mjs', command, directory],
-    {
-      env: { ...env, DATABASE_URL: runtimeUrl(role) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  const options = {
+    env: { ...env, DATABASE_URL: runtimeUrl(role) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  };
+  const keys =
+    command === 'serve' ? runtimeKeys : ['DATABASE_URL', 'REDIS_URL'];
+  const child = image
+    ? spawn('docker', dockerArgs(command, keys), options)
+    : spawn(
+        process.execPath,
+        ['scripts/reactivecore.mjs', command, directory],
+        options,
+      );
   child.stdout.on('data', (data) => logs.push(data.toString()));
   child.stderr.on('data', (data) => logs.push(data.toString()));
   children.push(child);
@@ -109,6 +157,15 @@ try {
     join(directory, 'project.json'),
     JSON.stringify({ ...fixture.default, name, mysql: { tables: ['items'] } }),
   );
+  if (image) {
+    for (const dir of ['', 'migrations', 'migrations/mysql']) {
+      const path = join(directory, dir);
+      await chmod(path, 0o755);
+      for (const entry of await readdir(path, { withFileTypes: true })) {
+        if (entry.isFile()) await chmod(join(path, entry.name), 0o644);
+      }
+    }
+  }
   await admin.query(
     `CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`,
   );
@@ -235,6 +292,13 @@ try {
   if (logs.length) console.error(logs.join(''));
   throw error;
 } finally {
+  if (image) {
+    await Promise.allSettled(
+      ['serve', 'worker'].map((command) =>
+        exec('docker', ['stop', '--time', '5', `${name}-${command}`]),
+      ),
+    );
+  }
   for (const child of children) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
     const closed = once(child, 'exit');

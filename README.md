@@ -813,3 +813,15 @@ RC_REPLICA_LOAD_TEST=1 RC_LOAD_SUBSCRIBERS=48 RC_LOAD_CONCURRENCY=8 \
 ```
 
 The first run uses one API. The second divides the same load across two API processes connected to one MySQL database and one Redis channel. The PostgreSQL admission limit does not apply to MySQL. The two-API test then exercises the same subscriber recovery and cross-instance mutation replay used in the PostgreSQL test. Both tests cover an API shutdown while the shared database and worker remain available.
+
+### Test recovery after losing the database connection
+
+Start the same integration infrastructure used above, including the disposable MySQL 8.4 instance for the second command. Run the commands from the repository root.
+
+```sh
+RC_DATABASE_OUTAGE_TEST=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+RC_DATABASE_OUTAGE_TEST=1 RC_MYSQL_TEST_URL=mysql://root:local_mysql_admin@127.0.0.1:53306 \
+  node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
+```
+
+The test interrupts the API and worker TCP connections to the database. It drops the response to a committed mutation and submits another mutation during the outage. After reconnecting, it retries with the original idempotency keys, checks that exactly three rows are visible on the existing SSE subscription, and waits for the worker to publish the corresponding outbox records. Each run prints a JSON line with recovery timings. GitHub Actions runs this scenario for both engines.

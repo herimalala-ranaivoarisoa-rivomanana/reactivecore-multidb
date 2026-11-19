@@ -106,6 +106,8 @@ const origin = 'http://127.0.0.1:4403';
 let server;
 let replica;
 let worker;
+const useOutage = process.env.RC_DATABASE_OUTAGE_TEST === '1';
+let outageLinks;
 const useReplica = process.env.RC_REPLICA_LOAD_TEST === '1';
 const replicaOrigin = 'http://127.0.0.1:4407';
 let ownsDatabase = false;
@@ -117,6 +119,13 @@ const sdkArchive = process.env.RC_TEST_SDK_ARCHIVE;
 const restoredDatabase = `${databaseName}_restore`;
 
 function startRuntime(command, runtimeEnv, instance = command) {
+  if (outageLinks) {
+    const link = command === 'worker' ? outageLinks.worker : outageLinks.api;
+    runtimeEnv = {
+      ...runtimeEnv,
+      DATABASE_URL: link.route(runtimeEnv.DATABASE_URL),
+    };
+  }
   if (!image) {
     return spawn(
       process.execPath,
@@ -367,6 +376,11 @@ void client.mutate('items.create', { title: 42 }, 'id');
 if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credentials reached the API');
 `,
   );
+  if (useOutage) {
+    const { databaseLinks } =
+      await import('./test-fixtures/check-database-outage.mjs');
+    outageLinks = await databaseLinks(env.DATABASE_URL, 5432);
+  }
   server = startRuntime('serve', env);
   server.stdout.on('data', (chunk) => logs.push(String(chunk)));
   server.stderr.on('data', (chunk) => logs.push(String(chunk)));
@@ -610,6 +624,34 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       signal: AbortSignal.timeout(90000),
     });
   }
+  if (outageLinks) {
+    const { checkDatabaseOutage } =
+      await import('./test-fixtures/check-database-outage.mjs');
+    const outageTenant = randomUUID();
+    await cli('tenant', directory, outageTenant);
+    const outbox = new pg.Client({
+      connectionString: pgUrl('reactivecore', adminPassword, databaseName),
+    });
+    await outbox.connect();
+    try {
+      await checkDatabaseOutage({
+        engine: 'postgres',
+        Client: ReactiveCoreClient,
+        origin,
+        token: await tokenFor(outageTenant),
+        links: outageLinks,
+        findPublished: async (ids) => {
+          const { rows } = await outbox.query(
+            'SELECT aggregate_id FROM public.event_outbox WHERE aggregate_id = ANY($1::uuid[]) AND published_at IS NOT NULL',
+            [ids],
+          );
+          return rows.map(({ aggregate_id }) => aggregate_id);
+        },
+      });
+    } finally {
+      await outbox.end();
+    }
+  }
   if (useReplica) {
     const { checkReplicaFailover } =
       await import('./test-fixtures/check-replica-failover.mjs');
@@ -651,6 +693,7 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     child.kill('SIGTERM');
     await closed;
   }
+  await outageLinks?.close();
   try {
     if (ownsDatabase || ownsRole) {
       const admin = new pg.Client({

@@ -50,6 +50,8 @@ const runtimeUrl = (role) => {
 };
 const origin = 'http://127.0.0.1:4405';
 const replicaOrigin = 'http://127.0.0.1:4408';
+const useOutage = process.env.RC_DATABASE_OUTAGE_TEST === '1';
+let outageLinks;
 const useReplica = process.env.RC_REPLICA_LOAD_TEST === '1';
 const issuer = 'urn:reactivecore:mysql-test';
 const audience = `reactivecore:${name}`;
@@ -138,8 +140,10 @@ function start(
   project = directory,
   { port = env.PORT, instance = command } = {},
 ) {
+  const url = runtimeUrl(role);
+  const link = command === 'worker' ? outageLinks?.worker : outageLinks?.api;
   const options = {
-    env: { ...env, PORT: port, DATABASE_URL: runtimeUrl(role) },
+    env: { ...env, PORT: port, DATABASE_URL: link ? link.route(url) : url },
     stdio: ['ignore', 'pipe', 'pipe'],
   };
   const keys =
@@ -437,6 +441,11 @@ try {
   await cli('tenant', directory, otherTenant);
   await grantRuntime(true);
 
+  if (useOutage) {
+    const { databaseLinks } =
+      await import('./test-fixtures/check-database-outage.mjs');
+    outageLinks = await databaseLinks(runtimeUrl('reactivecore_app'), 3306);
+  }
   const api = start('serve', 'reactivecore_app');
   const signal = AbortSignal.timeout(30000);
   await waitReady(api, signal);
@@ -598,6 +607,27 @@ try {
     });
   }
   if (mysqlContainer) await checkRestore();
+  if (outageLinks) {
+    const { checkDatabaseOutage } =
+      await import('./test-fixtures/check-database-outage.mjs');
+    const outageTenant = randomUUID();
+    await cli('tenant', directory, outageTenant);
+    await checkDatabaseOutage({
+      engine: 'mysql',
+      Client: ReactiveCoreClient,
+      origin,
+      token: await tokenFor(outageTenant),
+      links: outageLinks,
+      findPublished: async (ids) => {
+        const placeholders = ids.map(() => '?').join(', ');
+        const [rows] = await admin.execute(
+          `SELECT aggregate_id FROM \`${database}\`.rc_outbox WHERE aggregate_id IN (${placeholders}) AND published_at IS NOT NULL`,
+          ids,
+        );
+        return rows.map(({ aggregate_id }) => aggregate_id);
+      },
+    });
+  }
   if (useReplica) {
     const { checkReplicaFailover } =
       await import('./test-fixtures/check-replica-failover.mjs');
@@ -639,6 +669,7 @@ try {
     child.kill('SIGTERM');
     await closed;
   }
+  await outageLinks?.close();
   try {
     if (created) await admin.query(`DROP DATABASE \`${database}\``);
   } finally {

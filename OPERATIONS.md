@@ -245,6 +245,12 @@ Run the [MySQL replica test](README.md#compare-two-mysql-api-instances) to verif
 
 After the first API stopped, the existing SSE subscription caught up through the surviving API in 293 ms. A retry with the original key returned the same mutation receipt across instances. These measurements exercise API failover with one shared database.
 
+## Check recovery after losing the database connection
+
+Run the [local database outage scenario](README.md#test-recovery-after-losing-the-database-connection) for both engines. During the outage, expect HTTP 200 from `/api/health/live` and HTTP 503 from `/api/health/ready`. A mutation sent during the outage fails. Retry with the same idempotency key after readiness returns. If the transaction was already committed, the API returns the original receipt. If it never committed, the retry can execute it.
+
+The JSON output measures elapsed milliseconds from reconnecting the TCP links. `readyMs` ends at the first successful readiness check. `completeSseMs` and `outboxPublishedMs` include the mutation retries and end when the existing subscription has the three committed rows and the worker has published their outbox records, respectively. The database process and its storage remain available throughout this local test. Use the provider validation workflow for managed database testing.
+
 ## Monitor and report problems
 
 Check `/api/health/live` for process liveness, `/api/health/ready` for database readiness, and `/api/health` for Redis and PostgreSQL status. Monitor API errors, reconnect rates, and continuously growing outbox lag. Use a separately authorized monitoring connection for outbox metrics. Inspect both runtime logs with `docker logs rc-api` and `docker logs rc-worker`, and run restore drills against your recovery targets. Use the [security policy](SECURITY.md) for private vulnerability reports.

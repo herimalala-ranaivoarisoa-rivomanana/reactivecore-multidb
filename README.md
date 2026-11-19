@@ -8,7 +8,7 @@ You supply the schema, queries, mutations, and access policies. ReactiveCore iso
 
 This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend for a live item list. You can replace either example with your own application.
 
-**Release status.** The published alpha includes a Docker runtime for Linux amd64 and a TypeScript SDK. [Download v0.2.0-alpha.3](#download-v020-alpha3)
+**Release status.** The published alpha includes a Docker runtime for Linux amd64 and a TypeScript SDK. [Download v0.2.0-alpha.4](#download-v020-alpha3)
 
 [Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Next.js conflict example](#run-the-nextjs-offline-conflict-example) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
@@ -272,7 +272,7 @@ cp ../my-project/client.ts ../my-project-web/src/reactivecore-client.ts
 
 cd ../my-project-web
 npm install
-npm install ./reactivecore-client-0.2.0-alpha.3.tgz
+npm install ./reactivecore-client-0.2.0-alpha.4.tgz
 ```
 
 Use the filename printed by `npm pack` if your SDK version differs. After changing the backend's function contracts, rerun `codegen` from the ReactiveCore repository and copy the new file into `src/reactivecore-client.ts`.
@@ -350,7 +350,7 @@ npm pack -w @reactivecore/client --pack-destination ../my-project-next
 cp ../my-project/client.ts ../my-project-next/src/reactivecore-client.ts
 
 cd ../my-project-next
-npm install ./reactivecore-client-0.2.0-alpha.3.tgz
+npm install ./reactivecore-client-0.2.0-alpha.4.tgz
 ```
 
 From `my-project-next`, replace the starter layout and home page. The layout uses system fonts, and the Client Component opens the subscription in the browser.
@@ -730,13 +730,13 @@ See the [operations guide](OPERATIONS.md) for release artifacts, container deplo
 3. Serve the API over HTTPS. Allow the frontend origins in `RC_CORS_ORIGINS` and configure the reverse proxy to stream SSE without response buffering. Set `RC_HOST` and `PORT` for your deployment. If you override `RC_INVALIDATION_CHANNEL`, give the API and worker the same value.
 4. Monitor `/api/health/live` and `/api/health/ready`. Monitor Redis separately through `/api/health`. The durable change log lets the subscription engine catch up when Redis is unavailable. Deploy trusted project modules with the API and use separate deployments and credentials for applications operated by independent teams.
 
-## Download v0.2.0-alpha.3
+## Download v0.2.0-alpha.4
 
-The published alpha includes a Linux amd64 runtime image and a TypeScript SDK. All three files are available on the release page. [GitHub Releases](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.3)
+The published alpha includes a Linux amd64 runtime image and a TypeScript SDK. All three files are available on the release page. [GitHub Releases](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.4)
 
-- [Docker runtime archive](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/reactivecore-multidb-v0.2.0-alpha.3-linux-amd64.tar.gz)
-- [TypeScript SDK package](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/reactivecore-client-0.2.0-alpha.3.tgz)
-- [SHA-256 checksums](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/SHA256SUMS)
+- [Docker runtime archive](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.4/reactivecore-multidb-v0.2.0-alpha.4-linux-amd64.tar.gz)
+- [TypeScript SDK package](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.4/reactivecore-client-0.2.0-alpha.4.tgz)
+- [SHA-256 checksums](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.4/SHA256SUMS)
 
 For a packaged deployment, follow the steps to verify the downloads, load the Docker image, and start the API and worker. The local setup guide builds from source and walks through creating a Vue or Next.js frontend. [Packaged deployment guide](OPERATIONS.md#install-a-release) · [Local setup guide](#1-install-the-prerequisites)
 
@@ -748,7 +748,7 @@ For a packaged deployment, follow the steps to verify the downloads, load the Do
 | Packaged SDK and runtime | The release workflow tested the Docker image and the Next.js offline conflict example with the published SDK package. |
 | MySQL restore | A logical backup was restored to a separate local MySQL 8.4 instance over TLS. The test recovered the original mutation receipt and verified SSE and outbox delivery for a new write. |
 
-PostgreSQL 16 is the established engine. MySQL 8.4 is a preview for applications using the structured tenant data interface. Validation on Neon and Amazon RDS, including an RDS snapshot restore, is pending. Use this alpha for development and evaluation. [Release notes](docs/releases/0.2.0-alpha.3.md) · [Cloud validation guide](OPERATIONS.md#prepare-the-provider-validation)
+PostgreSQL 16 is the established engine. MySQL 8.4 is a preview for applications using the structured tenant data interface. Validation on Neon and Amazon RDS, including an RDS snapshot restore, is pending. Use this alpha for development and evaluation. [Release notes](docs/releases/0.2.0-alpha.4.md) · [Cloud validation guide](OPERATIONS.md#prepare-the-provider-validation)
 
 ## Troubleshooting
 

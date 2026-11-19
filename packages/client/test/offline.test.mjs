@@ -76,3 +76,25 @@ test('a new SSE connection accepts a restored sequence and resumes increasing or
     await stream.return();
   }
 });
+
+
+test('accepts a fresh snapshot with the same sequence after reconnecting', async (t) => {
+  const responses = [['before restore'], ['restored snapshot']];
+  t.mock.method(globalThis, 'fetch', async () => new Response(
+    responses.shift().map((data) =>
+      `event: snapshot\ndata: ${JSON.stringify({ seq: '7', data })}\n\n`,
+    ).join(''),
+    { headers: { 'content-type': 'text/event-stream' } },
+  ));
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(2000)]);
+  const client = new ReactiveCoreClient('http://localhost', () => 'test');
+  const stream = client.subscribe('items.list', {}, signal);
+  try {
+    assert.deepEqual((await stream.next()).value, { seq: '7', data: 'before restore' });
+    assert.deepEqual((await stream.next()).value, { seq: '7', data: 'restored snapshot' });
+  } finally {
+    controller.abort();
+    await stream.return();
+  }
+});

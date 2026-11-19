@@ -66,6 +66,7 @@ jobs:
       - name: Verify packaged SDK and runtime image on PostgreSQL and MySQL
         env:
           RC_BROWSER_CONFLICT_TEST: '1'
+          RC_RETENTION_TEST: '1'
           RC_MYSQL_UPGRADE_IMAGE: reactivecore-multidb:v0.2.0-alpha.1
           RC_MYSQL_TEST_CONTAINER: ${{ job.services.mysql.id }}
           RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}

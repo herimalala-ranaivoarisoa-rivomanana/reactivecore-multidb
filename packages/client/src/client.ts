@@ -130,8 +130,9 @@ export class ReactiveCoreClient {
   }
 
   /**
-   * Yields newer snapshots and reconnects after transient failures. A new stream can reset the sequence after a restore. Permanent HTTP errors
-   * propagate to the caller. Abort the signal when the consumer no longer needs updates.
+   * Yields the first snapshot on each connection and newer snapshots on that stream.
+   * Reconnects after transient failures and propagates permanent HTTP errors.
+   * Abort the signal when the consumer no longer needs updates.
    */
   async *subscribe<T>(
     name: string,
@@ -159,7 +160,7 @@ export class ReactiveCoreClient {
           announced = true;
           delay = 250;
           const next = BigInt(snapshot.seq);
-          if (seq === undefined || next > seq || (first && next < seq)) {
+          if (first || seq === undefined || next > seq) {
             seq = next;
             yield snapshot;
           }

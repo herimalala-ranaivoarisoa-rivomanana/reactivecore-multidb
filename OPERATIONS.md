@@ -4,15 +4,15 @@ These instructions cover the Linux amd64 alpha image, an existing PostgreSQL 16 
 
 ## Install a release
 
-From the [MultiDB prerelease](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.3), download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Verify the downloads and load the image. Replace the version in the commands with the published tag.
+From the [MultiDB prerelease](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.4), download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Verify the downloads and load the image. Replace the version in the commands with the published tag.
 
 ```sh
 sha256sum -c SHA256SUMS
-docker load -i reactivecore-multidb-v0.2.0-alpha.3-linux-amd64.tar.gz
-export RC_IMAGE=reactivecore-multidb:v0.2.0-alpha.3
+docker load -i reactivecore-multidb-v0.2.0-alpha.4-linux-amd64.tar.gz
+export RC_IMAGE=reactivecore-multidb:v0.2.0-alpha.4
 ```
 
-To install the SDK from that release, run `npm install ./reactivecore-client-0.2.0-alpha.3.tgz` from your frontend. The release workflow publishes both files to GitHub Releases.
+To install the SDK from that release, run `npm install ./reactivecore-client-0.2.0-alpha.4.tgz` from your frontend. The release workflow publishes both files to GitHub Releases.
 
 ## Start a deployment
 
@@ -276,7 +276,7 @@ Check `/api/health/live` for process liveness, `/api/health/ready` for database 
 
 ## Cut a release
 
-After reviewing the changes and verifying them in CI, set matching versions in the root and SDK manifests and update the lockfile. Create and push a tag matching the version, such as `v0.2.0-alpha.3`. The tag workflow builds and reloads the image, installs the SDK archive into the Next.js browser example, checks both database engines and a PostgreSQL restore, then publishes a GitHub prerelease with checksums.
+After reviewing the changes and verifying them in CI, set matching versions in the root and SDK manifests and update the lockfile. Create and push a tag matching the version, such as `v0.2.0-alpha.4`. The tag workflow builds and reloads the image, installs the SDK archive into the Next.js browser example, checks both database engines and a PostgreSQL restore, then publishes a GitHub prerelease with checksums.
 
 ## Set SSE limits and retain delivery records
 

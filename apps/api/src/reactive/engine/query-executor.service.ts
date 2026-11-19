@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-import { DatabaseService } from '../../database/database.service.js';
+import { QuerySnapshotStore } from '../contracts/query-snapshot-store.js';
 
 import { QueryRegistryService } from '../registry/query-registry.service.js';
 import { DependencyTrackerService } from './dependency-tracker.service.js';
@@ -18,7 +18,7 @@ export interface ExecutedQuery {
 @Injectable()
 export class QueryExecutorService {
   constructor(
-    private readonly database: DatabaseService,
+    private readonly snapshots: QuerySnapshotStore,
     private readonly registry: QueryRegistryService,
     private readonly tracker: DependencyTrackerService,
   ) {}
@@ -32,7 +32,7 @@ export class QueryExecutorService {
 
     const collector = this.tracker.createCollector();
 
-    return this.database.snapshotTenantTransaction(
+    return this.snapshots.snapshotTenantTransaction(
       principal.tenantId,
       async (client, snapshotSeq) => {
         const data = await handler(

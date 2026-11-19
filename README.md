@@ -16,7 +16,7 @@ This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend
 
 The mutation engine uses an internal [mutation storage contract](apps/api/src/mutation/mutation-store.ts). Its [PostgreSQL implementation](apps/api/src/mutation/postgres-mutation-store.ts) reserves the idempotency key and commits the handler's business write, receipt, change log, and outbox in one transaction. Retries are limited to errors the adapter identifies as rolled back. The PostgreSQL integration suite checks that replays return the same result and that subscribers and the outbox worker see the committed change.
 
-PostgreSQL remains the supported engine. Application handlers still receive a PostgreSQL query client. Supporting a second engine requires a way to write application data through that engine's transaction, plus equivalent query snapshots, durable change feeds, outbox delivery, and tenant isolation.
+The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). PostgreSQL implements both and remains the supported engine. Application handlers still receive a PostgreSQL query client. A second engine would need an application data interface, equivalent snapshot and change-feed implementations, durable outbox delivery, and tenant isolation.
 
 ## 1. Install the prerequisites
 

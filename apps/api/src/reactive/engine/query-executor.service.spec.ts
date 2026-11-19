@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg';
-import type { DatabaseService } from '../../database/database.service.js';
+import type { QuerySnapshotStore } from '../contracts/query-snapshot-store.js';
 import type { QueryContext } from '../contracts/query-context.js';
 import type { QueryRegistryService } from '../registry/query-registry.service.js';
 import { DependencyTrackerService } from './dependency-tracker.service.js';
@@ -20,7 +20,7 @@ it('executes the registered handler on the tenant connection and returns its dep
     return args;
   });
   const registry = { get: vi.fn().mockReturnValue(handler) };
-  const database = {
+  const snapshots = {
     snapshotTenantTransaction: vi.fn(
       async (
         _tenant: string,
@@ -29,7 +29,7 @@ it('executes the registered handler on the tenant connection and returns its dep
     ),
   };
   const executor = new QueryExecutorService(
-    database as unknown as DatabaseService,
+    snapshots as unknown as QuerySnapshotStore,
     registry as unknown as QueryRegistryService,
     new DependencyTrackerService(),
   );
@@ -42,7 +42,7 @@ it('executes the registered handler on the tenant connection and returns its dep
     dependencies: [dependency],
   });
   expect(registry.get).toHaveBeenCalledWith('stocks.list');
-  expect(database.snapshotTenantTransaction).toHaveBeenCalledWith(
+  expect(snapshots.snapshotTenantTransaction).toHaveBeenCalledWith(
     'tenant-a',
     expect.any(Function),
   );

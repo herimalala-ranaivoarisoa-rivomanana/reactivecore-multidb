@@ -1,9 +1,10 @@
 import { Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import type { QuerySnapshotStore } from '../reactive/contracts/query-snapshot-store.js';
 
 @Injectable()
-export class DatabaseService implements OnModuleDestroy {
+export class DatabaseService implements OnModuleDestroy, QuerySnapshotStore {
   private readonly pool: Pool;
 
   constructor(@Optional() connectionString = process.env.DATABASE_URL) {

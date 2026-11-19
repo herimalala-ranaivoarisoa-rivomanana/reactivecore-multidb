@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { DatabaseService } from '../../database/database.service.js';
+import type { ChangeFeed } from '../contracts/change-feed.js';
 import type { ChangeDescriptor } from '../contracts/dependency.types.js';
 
 export type JournalChange = Omit<ChangeDescriptor, 'tenantId'> & {
@@ -19,7 +20,7 @@ interface JournalRow {
 }
 
 @Injectable()
-export class ChangeLogService {
+export class ChangeLogService implements ChangeFeed {
   constructor(private readonly database: DatabaseService) {}
 
   /** Allocates a commit sequence and appends changes using the caller’s transaction. */

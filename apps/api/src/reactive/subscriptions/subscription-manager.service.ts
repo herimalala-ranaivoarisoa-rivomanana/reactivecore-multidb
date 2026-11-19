@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { ChangeLogService } from '../changelog/change-log.service.js';
+import { ChangeFeed } from '../contracts/change-feed.js';
 import type {
   ChangeDescriptor,
   Dependency,
@@ -53,7 +53,7 @@ export class SubscriptionManagerService
   constructor(
     private readonly executor: QueryExecutorService,
     private readonly invalidation: InvalidationService,
-    private readonly journal: ChangeLogService,
+    private readonly journal: ChangeFeed,
   ) {
     this.index = new DependencyIndex(invalidation);
   }

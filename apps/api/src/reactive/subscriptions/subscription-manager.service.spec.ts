@@ -1,4 +1,4 @@
-import type { ChangeLogService } from '../changelog/change-log.service.js';
+import type { ChangeFeed } from '../contracts/change-feed.js';
 import type {
   ChangeDescriptor,
   Dependency,
@@ -42,7 +42,7 @@ function scenario() {
   const manager = new SubscriptionManagerService(
     { execute } as unknown as QueryExecutorService,
     new InvalidationService(),
-    journal as unknown as ChangeLogService,
+    journal as unknown as ChangeFeed,
   );
   return { execute, journal, manager, listener: vi.fn() };
 }

@@ -1,3 +1,4 @@
+import { mysqlNativeSql } from './mysql-native-sql.js';
 import { Injectable } from '@nestjs/common';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import {
@@ -39,6 +40,7 @@ export class MysqlMutationStore extends MutationStore {
         get client() {
           return mysqlLegacyClient();
         },
+        mysqlSql: mysqlNativeSql(connection, true),
         data: mysqlTenantData(connection, scope.tenantId),
         async reserve(requestHash) {
           try {

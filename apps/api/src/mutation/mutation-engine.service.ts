@@ -128,6 +128,7 @@ export class MutationEngineService {
             return transaction.client;
           },
           data: transaction.data,
+          ...(transaction.mysqlSql ? { mysqlSql: transaction.mysqlSql } : {}),
           recordChange: (change) =>
             changes.push({ ...structuredClone(change), eventId: randomUUID() }),
         },

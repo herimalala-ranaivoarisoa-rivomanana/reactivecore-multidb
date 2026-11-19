@@ -3,9 +3,13 @@ import {
   matchedTenantRow,
   updateColumns,
   versionedWrites,
+  type GetRow,
+  type RowValue,
   type TenantReader,
   type TenantWriter,
 } from './tenant-data.js';
+import { tenantListSql } from './tenant-list-sql.js';
+import { tenantReportSql } from './tenant-report-sql.js';
 
 function identifier(name: string): string {
   if (typeof name !== 'string' || !/^[a-z_][a-z0-9_]{0,62}$/.test(name))
@@ -20,34 +24,48 @@ export function postgresTenantData(
   client: PoolClient,
   tenantId: string,
 ): TenantReader & TenantWriter {
+  async function read<Row extends Record<string, unknown>>(
+    { table, id, columns }: GetRow,
+    lock: boolean,
+  ): Promise<Row | null> {
+    if (!columns.length) throw new Error('A get requires columns');
+    const { rows } = await client.query<Row>(
+      `SELECT ${columns.map(identifier).join(', ')}
+       FROM public.${identifier(table)} WHERE tenant_id = $1 AND id = $2 LIMIT 2 ${lock ? 'FOR UPDATE' : ''}`,
+      [tenantId, id],
+    );
+    return matchedTenantRow(rows.length) ? rows[0] : null;
+  }
+
   const data: TenantReader &
-    Pick<TenantWriter, 'insert' | 'update' | 'delete'> = {
-    async get({ table, id, columns }) {
-      if (!columns.length) throw new Error('A get requires columns');
-      const { rows } = await client.query(
-        `SELECT ${columns.map(identifier).join(', ')}
-         FROM public.${identifier(table)} WHERE tenant_id = $1 AND id = $2 LIMIT 2`,
-        [tenantId, id],
-      );
-      return matchedTenantRow(rows.length) ? rows[0] : null;
+    Pick<TenantWriter, 'getForUpdate' | 'insert' | 'update' | 'delete'> = {
+    get: (request) => read(request, false),
+    getForUpdate: (request) => read(request, true),
+
+    async report(request) {
+      const values: RowValue[] = [tenantId];
+      const sql = tenantReportSql(request, {
+        identifier,
+        table: (table) => `public.${identifier(table)}`,
+        tenantParameter: '$1',
+        bind: (value) => `$${values.push(value)}`,
+        asText: (expression) => `CAST(${expression} AS TEXT)`,
+      });
+      const { rows } = await client.query(sql, values);
+      return rows;
     },
 
-    async list({ table, columns, orderBy, limit }) {
-      if (!columns.length || !Number.isSafeInteger(limit) || limit < 1)
-        throw new Error('A list requires columns and a positive integer limit');
-
-      const order = orderBy?.map(({ column, direction }) => {
-        if (direction !== 'asc' && direction !== 'desc')
-          throw new Error('Unsupported sort direction');
-        return `${identifier(column)} ${direction}`;
-      });
-
+    async list(request) {
+      const values: RowValue[] = [tenantId];
+      const bind = (value: RowValue) => `$${values.push(value)}`;
+      const sql = tenantListSql(request, identifier, bind);
+      const limit = bind(request.limit);
+      const offset =
+        request.offset === undefined ? '' : `OFFSET ${bind(request.offset)}`;
       const { rows } = await client.query(
-        `SELECT ${columns.map(identifier).join(', ')}
-         FROM public.${identifier(table)} WHERE tenant_id = $1
-         ${order?.length ? `ORDER BY ${order.join(', ')}` : ''}
-         LIMIT $2`,
-        [tenantId, limit],
+        `SELECT ${sql.projection} FROM public.${identifier(request.table)}
+         WHERE tenant_id = $1 ${sql.predicate} ${sql.order} LIMIT ${limit} ${offset}`,
+        values,
       );
       return rows;
     },
@@ -91,12 +109,16 @@ export function postgresTenantData(
 
   return {
     ...data,
-    ...versionedWrites(data, async (table, id) => {
-      const { rows } = await client.query<{ version: number }>(
-        `SELECT version FROM public.${identifier(table)} WHERE tenant_id = $1 AND id = $2 LIMIT 2 FOR UPDATE`,
-        [tenantId, id],
-      );
-      return matchedTenantRow(rows.length) ? rows[0].version : null;
-    }),
+    ...versionedWrites(
+      data,
+      async (table, id) =>
+        (
+          await data.getForUpdate<{ version: number }>({
+            table,
+            id,
+            columns: ['version'],
+          })
+        )?.version ?? null,
+    ),
   };
 }

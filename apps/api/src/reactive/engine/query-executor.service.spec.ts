@@ -8,7 +8,7 @@ import { QueryExecutorService } from './query-executor.service.js';
 it('executes the registered handler on the tenant connection and returns its dependencies', async () => {
   const principal = { userId: 'user-a', tenantId: 'tenant-a', roles: [] };
   const client = {} as PoolClient;
-  const data = { get: vi.fn(), list: vi.fn() };
+  const data = { get: vi.fn(), list: vi.fn(), report: vi.fn() };
   const dependency = {
     kind: 'table',
     table: 'stocks',
@@ -27,7 +27,7 @@ it('executes the registered handler on the tenant connection and returns its dep
       async (
         _tenant: string,
         run: (
-          access: Pick<QueryContext, 'client' | 'data'>,
+          access: Pick<QueryContext, 'client' | 'data' | 'mysqlSql'>,
           seq: string,
         ) => Promise<unknown>,
       ) => run({ client, data }, '42'),

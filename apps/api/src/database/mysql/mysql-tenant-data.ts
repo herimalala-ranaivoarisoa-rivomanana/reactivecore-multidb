@@ -9,9 +9,12 @@ import {
   updateColumns,
   versionedWrites,
   type GetRow,
+  type RowValue,
   type TenantReader,
   type TenantWriter,
 } from '../tenant-data.js';
+import { tenantListSql } from '../tenant-list-sql.js';
+import { tenantReportSql } from '../tenant-report-sql.js';
 
 export function mysqlTenantData(
   connection: PoolConnection,
@@ -26,39 +29,53 @@ export function mysqlTenantData(
     return mysqlIdentifier(table);
   }
 
+  async function read<Row extends Record<string, unknown>>(
+    { table, id, columns }: GetRow,
+    lock: boolean,
+  ): Promise<Row | null> {
+    if (!columns.length) throw new Error('A get requires columns');
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      `SELECT ${columns.map(mysqlIdentifier).join(', ')}
+       FROM ${tableName(table)} WHERE tenant_id = ? AND id = ? LIMIT 2 ${lock ? 'FOR UPDATE' : ''}`,
+      [tenantId, id],
+    );
+    return matchedTenantRow(rows.length) ? (rows[0] as Row) : null;
+  }
+
   const data: TenantReader &
-    Pick<TenantWriter, 'insert' | 'update' | 'delete'> = {
-    async get<Row extends Record<string, unknown>>({
-      table,
-      id,
-      columns,
-    }: GetRow) {
-      if (!columns.length) throw new Error('A get requires columns');
-      const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT ${columns.map(mysqlIdentifier).join(', ')}
-         FROM ${tableName(table)} WHERE tenant_id = ? AND id = ? LIMIT 2`,
-        [tenantId, id],
-      );
-      return matchedTenantRow(rows.length) ? (rows[0] as Row) : null;
+    Pick<TenantWriter, 'getForUpdate' | 'insert' | 'update' | 'delete'> = {
+    get: (request) => read(request, false),
+    getForUpdate: (request) => read(request, true),
+
+    async report(request) {
+      const values: RowValue[] = [tenantId];
+      const sql = tenantReportSql(request, {
+        identifier: mysqlIdentifier,
+        table: tableName,
+        tenantParameter: '?',
+        bind: (value) => {
+          values.push(value);
+          return '?';
+        },
+        asText: (expression) => `CAST(${expression} AS CHAR)`,
+      });
+      const [rows] = await connection.execute<RowDataPacket[]>(sql, values);
+      return rows;
     },
 
-    async list<Row extends Record<string, unknown>>({
-      table,
-      columns,
-      orderBy,
-      limit,
-    }: Parameters<TenantReader['list']>[0]) {
-      if (!columns.length || !Number.isSafeInteger(limit) || limit < 1)
-        throw new Error('A list requires columns and a positive integer limit');
-      const order = orderBy?.map(({ column, direction }) => {
-        if (direction !== 'asc' && direction !== 'desc')
-          throw new Error('Unsupported sort direction');
-        return `${mysqlIdentifier(column)} ${direction}`;
+    async list<Row extends Record<string, unknown>>(
+      request: Parameters<TenantReader['list']>[0],
+    ) {
+      const values: RowValue[] = [tenantId];
+      const sql = tenantListSql(request, mysqlIdentifier, (value) => {
+        values.push(value);
+        return '?';
       });
       const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT ${columns.map(mysqlIdentifier).join(', ')} FROM ${tableName(table)}
-         WHERE tenant_id = ? ${order?.length ? `ORDER BY ${order.join(', ')}` : ''} LIMIT ${limit}`,
-        [tenantId],
+        `SELECT ${sql.projection} FROM ${tableName(request.table)}
+         WHERE tenant_id = ? ${sql.predicate} ${sql.order}
+         LIMIT ${request.limit} ${request.offset === undefined ? '' : `OFFSET ${request.offset}`}`,
+        values,
       );
       return rows as Row[];
     },
@@ -99,12 +116,16 @@ export function mysqlTenantData(
 
   return {
     ...data,
-    ...versionedWrites(data, async (table, id) => {
-      const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT version FROM ${tableName(table)} WHERE tenant_id = ? AND id = ? LIMIT 2 FOR UPDATE`,
-        [tenantId, id],
-      );
-      return matchedTenantRow(rows.length) ? rows[0].version : null;
-    }),
+    ...versionedWrites(
+      data,
+      async (table, id) =>
+        (
+          await data.getForUpdate<{ version: number }>({
+            table,
+            id,
+            columns: ['version'],
+          })
+        )?.version ?? null,
+    ),
   };
 }

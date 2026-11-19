@@ -314,9 +314,12 @@ async function start(command, directory, name, database, manifest) {
   delete runtimeEnv.RC_PROVISION_EXISTING_DATABASE;
   delete runtimeEnv.RC_PROVISION_APP_PASSWORD;
   delete runtimeEnv.RC_PROVISION_WORKER_PASSWORD;
+  delete runtimeEnv.RC_MYSQL_NATIVE_SQL;
   if (connection.protocol === 'mysql:' && command === 'serve') {
     const { mysqlTables } = await import('./mysql-project.mjs');
     runtimeEnv.RC_MYSQL_TABLES = mysqlTables(manifest).join(',');
+    if (manifest.mysql?.nativeSql === true)
+      runtimeEnv.RC_MYSQL_NATIVE_SQL = '1';
   }
   if (command === 'serve') {
     runtimeEnv.RC_APPLICATION_FILE = join(directory, 'application.mjs');

@@ -1,3 +1,4 @@
+import { mysqlNativeSql } from './mysql-native-sql.js';
 import { Injectable } from '@nestjs/common';
 import type { RowDataPacket } from 'mysql2/promise';
 import type {
@@ -17,7 +18,7 @@ export class MysqlReactiveStore implements QuerySnapshotStore, ChangeFeed {
   snapshotTenantTransaction<T>(
     tenantId: string,
     run: (
-      access: Pick<QueryContext, 'client' | 'data'>,
+      access: Pick<QueryContext, 'client' | 'data' | 'mysqlSql'>,
       seq: string,
     ) => Promise<T>,
   ): Promise<T> {
@@ -28,6 +29,7 @@ export class MysqlReactiveStore implements QuerySnapshotStore, ChangeFeed {
             get client() {
               return mysqlLegacyClient();
             },
+            mysqlSql: mysqlNativeSql(connection, false),
             data: mysqlTenantData(connection, tenantId),
           },
           await this.database.currentSeq(connection),

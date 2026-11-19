@@ -5,7 +5,7 @@ export abstract class QuerySnapshotStore {
   abstract snapshotTenantTransaction<T>(
     tenantId: string,
     run: (
-      access: Pick<QueryContext, 'client' | 'data'>,
+      access: Pick<QueryContext, 'client' | 'data' | 'mysqlSql'>,
       snapshotSeq: string,
     ) => Promise<T>,
   ): Promise<T>;

@@ -3,7 +3,13 @@ export interface ListRows {
   columns: readonly string[];
   orderBy?: readonly { column: string; direction: 'asc' | 'desc' }[];
   limit: number;
+  offset?: number;
+  where?: readonly RowFilter[];
 }
+
+export type RowFilter =
+  | { column: string; op: 'eq' | 'ne'; value: RowValue }
+  | { column: string; op: 'lt' | 'lte' | 'gt' | 'gte'; value: string | number };
 
 export type RowValue = string | number | boolean | null;
 export type RowValues = Readonly<Record<string, RowValue>>;
@@ -35,8 +41,29 @@ export interface GetRow {
   columns: readonly string[];
 }
 
+export interface TenantReport {
+  from: { table: string; as: string };
+  joins?: readonly {
+    table: string;
+    as: string;
+    type: 'inner' | 'left';
+    on: { left: string; right: string };
+  }[];
+  /** Selected columns also form the GROUP BY keys. Use alias.column references. */
+  groupBy?: readonly { column: string; as: string }[];
+  aggregates: readonly (
+    | { fn: 'count'; column?: string; as: string }
+    | { fn: 'sum'; column: string; as: string }
+  )[];
+  where?: readonly RowFilter[];
+  limit: number;
+}
+
 /** Reads rows for the authenticated tenant in the current query snapshot. */
 export interface TenantReader {
+  /** Returns grouped aggregates as decimal strings, or null for an empty sum. */
+  report(request: TenantReport): Promise<Record<string, unknown>[]>;
+
   /** Returns the tenant's row by ID, or null when it is absent. */
   get<Row extends Record<string, unknown> = Record<string, unknown>>(
     request: GetRow,
@@ -49,6 +76,11 @@ export interface TenantReader {
 
 /** Writes rows for the authenticated tenant in the current mutation transaction. */
 export interface TenantWriter {
+  /** Locks a tenant row until the mutation transaction ends. */
+  getForUpdate<Row extends Record<string, unknown> = Record<string, unknown>>(
+    request: GetRow,
+  ): Promise<Row | null>;
+
   /** Supplies the tenant ID itself. Application values must omit tenant_id. */
   insert(table: string, values: RowValues): Promise<void>;
 

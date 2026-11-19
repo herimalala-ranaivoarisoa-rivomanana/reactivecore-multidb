@@ -16,7 +16,11 @@ import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { SignJWT } from 'jose';
 import pg from 'pg';
-import { checkItemWrites } from './test-fixtures/check-item-writes.mjs';
+import {
+  checkBilling,
+  checkItemWrites,
+  checkReservations,
+} from './test-fixtures/check-item-writes.mjs';
 
 const exec = promisify(execFile);
 const name = `items-${randomUUID().slice(0, 8)}`;
@@ -225,6 +229,14 @@ try {
     join(fixture, 'migrations/003_item_versions.sql'),
     join(directory, 'migrations/003_item_versions.sql'),
   );
+  await cp(
+    join(fixture, 'migrations/004_item_reservations.sql'),
+    join(directory, 'migrations/004_item_reservations.sql'),
+  );
+  await cp(
+    join(fixture, 'migrations/005_item_charges.sql'),
+    join(directory, 'migrations/005_item_charges.sql'),
+  );
   if (image) {
     await chmod(directory, 0o755);
     await chmod(join(directory, 'migrations'), 0o755);
@@ -234,6 +246,8 @@ try {
       'migrations/001_items.sql',
       'migrations/002_item_writes.sql',
       'migrations/003_item_versions.sql',
+      'migrations/004_item_reservations.sql',
+      'migrations/005_item_charges.sql',
     ]) {
       await chmod(join(directory, file), 0o644);
     }
@@ -325,7 +339,7 @@ void client.mutate('items.create', { title: 42 }, 'id');
     /Applied migrations were changed/,
   );
   await writeFile(migration, original);
-  const failing = join(directory, 'migrations/004_probe.sql');
+  const failing = join(directory, 'migrations/006_probe.sql');
   await writeFile(
     failing,
     'CREATE TABLE public.migration_probe (id int); SELECT missing_column;',
@@ -333,12 +347,12 @@ void client.mutate('items.create', { title: 42 }, 'id');
   if (image) await chmod(failing, 0o644);
   await assert.rejects(
     cli('provision', directory),
-    /Migration failed: project\/004_probe.sql/,
+    /Migration failed: project\/006_probe.sql/,
   );
   await writeFile(failing, 'CREATE TABLE public.migration_probe (id int);');
   assert.match(
     (await cli('provision', directory)).stdout,
-    /Applied project\/004_probe.sql/,
+    /Applied project\/006_probe.sql/,
   );
   await cli('tenant', directory, tenant);
   await cli('tenant', directory, otherTenant);
@@ -449,6 +463,7 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       "SELECT array_agg(tablename::text ORDER BY tablename) AS names FROM pg_tables WHERE schemaname = 'public'",
     );
     assert.deepEqual(tables.names, [
+      'charges',
       'event_outbox',
       'items',
       'migration_probe',
@@ -521,12 +536,11 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       restoredDatabase,
     ]);
   }
-  await checkItemWrites(
-    client,
-    await clientFor(tenant),
-    await clientFor(otherTenant),
-    signal,
-  );
+  const peer = await clientFor(tenant);
+  const other = await clientFor(otherTenant);
+  await checkItemWrites(client, peer, other, signal);
+  await checkReservations(client, peer, other, signal);
+  await checkBilling(client, other, signal);
   if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
     const { checkBrowserConflict } =
       await import('../examples/next-offline-conflicts/check-conflict.mjs');

@@ -42,6 +42,7 @@ export class QueryExecutorService {
               return access.client;
             },
             data: access.data,
+            ...(access.mysqlSql ? { mysqlSql: access.mysqlSql } : {}),
             dependencies: collector,
           },
           args,

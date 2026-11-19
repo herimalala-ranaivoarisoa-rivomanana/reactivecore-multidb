@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  cp,
+  mkdtemp,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout } from 'node:timers/promises';
@@ -10,7 +18,11 @@ import { promisify } from 'node:util';
 import { SignJWT } from 'jose';
 import { createConnection } from 'mysql2/promise';
 import { ReactiveCoreClient } from '@reactivecore/client';
-import { checkItemWrites } from './test-fixtures/check-item-writes.mjs';
+import {
+  checkBilling,
+  checkItemWrites,
+  checkReservations,
+} from './test-fixtures/check-item-writes.mjs';
 
 const exec = promisify(execFile);
 const base = process.env.RC_MYSQL_TEST_URL;
@@ -150,12 +162,61 @@ async function clientFor(tenantId) {
 let created = false;
 try {
   await cp('scripts/test-fixtures/project', directory, { recursive: true });
+  await rename(
+    join(directory, 'application.mjs'),
+    join(directory, 'base-application.mjs'),
+  );
+  await writeFile(
+    join(directory, 'application.mjs'),
+    `
+    import createBase from './base-application.mjs';
+    export default function createApplication(api) {
+      const base = createBase(api);
+      class NativeProbe {
+        async read(ctx, { id }) {
+          const { rows } = await ctx.mysqlSql.execute(
+            'SELECT title FROM items WHERE tenant_id = ? AND id = ?',
+            [ctx.principal.tenantId, id],
+          );
+          return rows[0] ?? null;
+        }
+        async rename(ctx, { id, title }) {
+          const { affectedRows } = await ctx.mysqlSql.execute(
+            'UPDATE items SET title = ?, version = version + 1 WHERE tenant_id = ? AND id = ?',
+            [title, ctx.principal.tenantId, id],
+          );
+          if (affectedRows !== 1) throw new api.NotFoundException();
+          ctx.recordChange({ table: 'items', documentId: id, operation: 'update', after: { title } });
+          return { id, title };
+        }
+      }
+      const methods = NativeProbe.prototype;
+      api.ReactiveQuery('native.read')(methods, 'read', Object.getOwnPropertyDescriptor(methods, 'read'));
+      api.ReactiveMutation({ name: 'native.rename', validate: (args) => args, authorize: () => {} })(
+        methods, 'rename', Object.getOwnPropertyDescriptor(methods, 'rename'),
+      );
+      class TestApplication {}
+      api.Module({ imports: [base.application], providers: [NativeProbe] })(TestApplication);
+      return {
+        application: TestApplication,
+        functions: {
+          queries: { ...base.functions.queries, 'native.read': () => {} },
+          mutations: [...base.functions.mutations, 'native.rename'],
+        },
+      };
+    }
+  `,
+  );
   const fixture = await import('./test-fixtures/project/project.json', {
     with: { type: 'json' },
   });
   await writeFile(
     join(directory, 'project.json'),
-    JSON.stringify({ ...fixture.default, name, mysql: { tables: ['items'] } }),
+    JSON.stringify({
+      ...fixture.default,
+      name,
+      mysql: { tables: ['items', 'charges'], nativeSql: true },
+    }),
   );
   if (image) {
     for (const dir of ['', 'migrations', 'migrations/mysql']) {
@@ -188,6 +249,7 @@ try {
     ['rc_changes', 'SELECT, INSERT'],
     ['rc_outbox', 'INSERT'],
     ['items', 'SELECT, INSERT'],
+    ['charges', 'SELECT, INSERT'],
   ];
   for (const [table, grants] of appGrants) {
     await admin.query(
@@ -195,7 +257,7 @@ try {
     );
   }
   await admin.query(
-    `GRANT UPDATE (title, version), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
+    `GRANT UPDATE (title, version, reserved_by), DELETE ON \`${database}\`.items TO 'reactivecore_app'@'%'`,
   );
   await admin.query(
     `GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
@@ -274,7 +336,27 @@ try {
     if (Number(outbox.count) === 1) break;
     await setTimeout(200, undefined, { signal });
   }
-  await checkItemWrites(client, await clientFor(tenant), other, signal);
+  const peer = await clientFor(tenant);
+  await checkItemWrites(client, peer, other, signal);
+  await checkReservations(client, peer, other, signal);
+  await checkBilling(client, other, signal);
+  const native = await client.mutate(
+    'items.create',
+    { title: 'Before native update' },
+    randomUUID(),
+    signal,
+  );
+  const nativeArgs = { id: native.data.id, title: 'Native update' };
+  await client.mutate('native.rename', nativeArgs, randomUUID(), signal);
+  assert.deepEqual(
+    (await client.query('native.read', { id: native.data.id }, signal)).data,
+    { title: 'Native update' },
+  );
+  assert.equal(
+    (await other.query('native.read', { id: native.data.id }, signal)).data,
+    null,
+  );
+
   if (process.env.RC_BROWSER_CONFLICT_TEST === '1') {
     const { checkBrowserConflict } =
       await import('../examples/next-offline-conflicts/check-conflict.mjs');

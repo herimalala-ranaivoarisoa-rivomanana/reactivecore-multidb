@@ -23,6 +23,32 @@
         },
         "null"
       ]
+    },
+    "items.available": {
+      "args": {
+        "offset": "number",
+        "limit": "number"
+      },
+      "result": [
+        {
+          "id": "string",
+          "title": "string",
+          "version": "number"
+        }
+      ]
+    },
+    "billing.monthly": {
+      "args": {},
+      "result": [
+        {
+          "period": "string",
+          "count": "string",
+          "total_cents": [
+            "string",
+            "null"
+          ]
+        }
+      ]
     }
   },
   "mutations": {
@@ -51,6 +77,26 @@
       "args": {
         "id": "string",
         "expectedVersion": "number"
+      },
+      "result": {
+        "id": "string"
+      }
+    },
+    "items.reserve": {
+      "args": {
+        "id": "string"
+      },
+      "result": {
+        "id": "string",
+        "reservedBy": "string",
+        "version": "number"
+      }
+    },
+    "billing.add_charge": {
+      "args": {
+        "itemId": "string",
+        "period": "string",
+        "amountCents": "number"
       },
       "result": {
         "id": "string"

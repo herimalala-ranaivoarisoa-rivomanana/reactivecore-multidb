@@ -73,6 +73,29 @@ export default function createApplication({
     };
   }
 
+  function validatePage(_principal, args) {
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Object.keys(args).length !== 2 ||
+      !Number.isSafeInteger(args.offset) ||
+      args.offset < 0 ||
+      !Number.isSafeInteger(args.limit) ||
+      args.limit < 1 ||
+      args.limit > 100
+    ) {
+      throw new BadRequestException(
+        'Expected a nonnegative offset and a limit from 1 to 100',
+      );
+    }
+  }
+
+  function validateReserve(args) {
+    if (!args || typeof args !== 'object' || Object.keys(args).length !== 1)
+      throw new BadRequestException('Expected an item ID');
+    return { id: validateItemId(args.id) };
+  }
+
   function validateGet(_principal, args) {
     if (!args || typeof args !== 'object' || Object.keys(args).length !== 1)
       throw new BadRequestException('Expected an item ID');
@@ -83,6 +106,27 @@ export default function createApplication({
     if (result === 'not-found') throw new NotFoundException('Item not found');
     if (result === 'conflict')
       throw new ConflictException('Item version has changed');
+  }
+
+  function validateCharge(args) {
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Object.keys(args).length !== 3 ||
+      typeof args.period !== 'string' ||
+      !/^\d{4}-(0[1-9]|1[0-2])$/.test(args.period) ||
+      !Number.isSafeInteger(args.amountCents) ||
+      args.amountCents < 1 ||
+      args.amountCents > 2147483647
+    )
+      throw new BadRequestException(
+        'Expected an item ID, a YYYY-MM period, and positive integer cents',
+      );
+    return {
+      itemId: validateItemId(args.itemId),
+      period: args.period,
+      amountCents: args.amountCents,
+    };
   }
 
   class ItemFunctions {
@@ -116,6 +160,93 @@ export default function createApplication({
         ],
         limit: 100,
       });
+    }
+
+    async available(ctx, { offset, limit }) {
+      ctx.dependencies.add({
+        kind: 'table',
+        table: 'items',
+        tenantId: ctx.principal.tenantId,
+      });
+      return ctx.data.list({
+        table: 'items',
+        columns: ['id', 'title', 'version'],
+        where: [{ column: 'reserved_by', op: 'eq', value: null }],
+        orderBy: [{ column: 'title', direction: 'asc' }],
+        limit,
+        offset,
+      });
+    }
+
+    async reserve(ctx, { id }) {
+      const item = await ctx.data.getForUpdate({
+        table: 'items',
+        id,
+        columns: ['reserved_by', 'version'],
+      });
+      if (!item) throw new NotFoundException('Item not found');
+      if (item.reserved_by !== null)
+        throw new ConflictException('Item is already reserved');
+      const reservedBy = ctx.principal.userId;
+      const version = item.version + 1;
+      await ctx.data.update('items', id, { reserved_by: reservedBy, version });
+      ctx.recordChange({
+        table: 'items',
+        documentId: id,
+        operation: 'update',
+        before: { reserved_by: null, version: item.version },
+        after: { reserved_by: reservedBy, version },
+      });
+      return { id, reservedBy, version };
+    }
+
+    async monthlyCharges(ctx) {
+      for (const table of ['items', 'charges']) {
+        ctx.dependencies.add({
+          kind: 'table',
+          table,
+          tenantId: ctx.principal.tenantId,
+        });
+      }
+      return ctx.data.report({
+        from: { table: 'charges', as: 'charge' },
+        joins: [
+          {
+            table: 'items',
+            as: 'item',
+            type: 'inner',
+            on: { left: 'charge.item_id', right: 'id' },
+          },
+        ],
+        groupBy: [{ column: 'charge.period', as: 'period' }],
+        aggregates: [
+          { fn: 'count', as: 'count' },
+          { fn: 'sum', column: 'charge.amount_cents', as: 'total_cents' },
+        ],
+        limit: 120,
+      });
+    }
+
+    async addCharge(ctx, { itemId, period, amountCents }) {
+      if (
+        !(await ctx.data.getForUpdate({
+          table: 'items',
+          id: itemId,
+          columns: ['id'],
+        }))
+      )
+        throw new NotFoundException('Item not found');
+      const id = randomUUID();
+      const values = { id, item_id: itemId, period, amount_cents: amountCents };
+      await ctx.data.insert('charges', values);
+      ctx.recordChange({
+        table: 'charges',
+        documentId: id,
+        operation: 'insert',
+        before: null,
+        after: values,
+      });
+      return { id };
     }
 
     async create(ctx, { title }) {
@@ -160,6 +291,30 @@ export default function createApplication({
   }
 
   const methods = ItemFunctions.prototype;
+  ReactiveQuery('billing.monthly')(
+    methods,
+    'monthlyCharges',
+    Object.getOwnPropertyDescriptor(methods, 'monthlyCharges'),
+  );
+  ReactiveMutation({
+    name: 'billing.add_charge',
+    validate: validateCharge,
+    authorize: () => {},
+  })(
+    methods,
+    'addCharge',
+    Object.getOwnPropertyDescriptor(methods, 'addCharge'),
+  );
+  ReactiveQuery('items.available')(
+    methods,
+    'available',
+    Object.getOwnPropertyDescriptor(methods, 'available'),
+  );
+  ReactiveMutation({
+    name: 'items.reserve',
+    validate: validateReserve,
+    authorize: () => {},
+  })(methods, 'reserve', Object.getOwnPropertyDescriptor(methods, 'reserve'));
   ReactiveQuery('items.get')(
     methods,
     'get',
@@ -190,8 +345,19 @@ export default function createApplication({
   return {
     application: Application,
     functions: {
-      queries: { 'items.list': validateList, 'items.get': validateGet },
-      mutations: ['items.create', 'items.update', 'items.delete'],
+      queries: {
+        'items.list': validateList,
+        'items.get': validateGet,
+        'items.available': validatePage,
+        'billing.monthly': validateList,
+      },
+      mutations: [
+        'items.create',
+        'items.update',
+        'items.delete',
+        'items.reserve',
+        'billing.add_charge',
+      ],
     },
   };
 }

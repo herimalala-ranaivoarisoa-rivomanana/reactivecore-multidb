@@ -16,7 +16,7 @@ This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend
 
 The mutation engine uses an internal [mutation storage contract](apps/api/src/mutation/mutation-store.ts). Its [PostgreSQL implementation](apps/api/src/mutation/postgres-mutation-store.ts) reserves the idempotency key and commits the handler's business write, receipt, change log, and outbox in one transaction. Retries are limited to errors the adapter identifies as rolled back. The PostgreSQL integration suite checks that replays return the same result and that subscribers and the outbox worker see the committed change.
 
-The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). The worker claims, retries, and acknowledges deliveries through an [outbox storage contract](apps/api/src/outbox/outbox-store.ts). Both adapters implement these contracts. The item example uses the [tenant data interface](apps/api/src/database/tenant-data.ts) for reads, inserts, updates, and deletes. The MySQL preview covers this interface and its InnoDB migrations.
+The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). The worker claims, retries, and acknowledges deliveries through an [outbox storage contract](apps/api/src/outbox/outbox-store.ts). Both adapters implement these contracts. The item example uses the [tenant data interface](apps/api/src/database/tenant-data.ts) for filtered and paginated reads, grouped reports, row locks, inserts, updates, and deletes. The MySQL preview covers this interface and its InnoDB migrations.
 
 ## 1. Install the prerequisites
 
@@ -86,11 +86,46 @@ The item example uses `ctx.data.list({ table, columns, orderBy, limit })` in que
 
 Use a `tenant_id` column and a stable `id` that uniquely identifies a row within that tenant. Define the constraint, policies, and restricted grants in your migrations. Updates cannot change `id` or `tenant_id`. The item handlers return HTTP 404 when the requested row is outside the caller's tenant or is missing.
 
-For an existing copy of the PostgreSQL item example, add the [write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) and the [version migration](scripts/test-fixtures/project/migrations/003_item_versions.sql), then run provisioning again before using the new mutations. On MySQL, apply the [version migration](scripts/test-fixtures/project/migrations/mysql/002_item_versions.sql) and the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Update the application factory and manifest, regenerate the client, and restart the API.
+For an existing copy of the PostgreSQL item example, add the [write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) the [version migration](scripts/test-fixtures/project/migrations/003_item_versions.sql), and the [reservation migration](scripts/test-fixtures/project/migrations/004_item_reservations.sql), then add the [billing migration](scripts/test-fixtures/project/migrations/005_item_charges.sql) and run provisioning again before using the new functions. On MySQL, apply the [version migration](scripts/test-fixtures/project/migrations/mysql/002_item_versions.sql), the [reservation migration](scripts/test-fixtures/project/migrations/mysql/003_item_reservations.sql), the [billing migration](scripts/test-fixtures/project/migrations/mysql/004_item_charges.sql), and the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Include both `items` and `charges` in `mysql.tables`. Update the application factory and manifest, regenerate the client, and restart the API.
 
 The read interface automatically filters by the authenticated tenant. The write interface supplies `tenant_id` and rejects values that try to set it. The example still registers its query dependency with `ctx.dependencies.add` and records the mutation with `ctx.recordChange`. Those calls tell the reactive engine what to refresh after a commit.
 
 Use the structured interface for the operations it supports. Existing PostgreSQL handlers can continue to execute SQL through `ctx.client`. Application code that uses PostgreSQL-specific SQL needs an equivalent implementation before it can run on another engine.
+
+### Filter pages and reserve a row atomically
+
+The same `ctx.data.list` call works on PostgreSQL and MySQL. Supply a `where` array to combine conditions with AND. Supported operators are `eq`, `ne`, `lt`, `lte`, `gt`, and `gte`. Use `eq` or `ne` with `null` to test for NULL. Filter values are bound as parameters. An `offset` requires an explicit sort order. The adapter appends `id` as a tie-breaker if needed. An offset page can shift when data changes between requests.
+
+```ts
+const page = await client.query('items.available', { offset: 0, limit: 10 });
+console.log(page.data);
+```
+
+The example lists items whose `reserved_by` field is null. It records a table dependency so reservations can shift the results of any subscribed page.
+
+Use `ctx.data.getForUpdate({ table, id, columns })` inside a mutation when a business decision depends on the current row. The lock is held until the mutation transaction ends. In `items.reserve`, the handler locks the item, reads its current availability, writes the reservation and increments the version. It records the change in that same transaction.
+
+```ts
+await client.mutate('items.reserve', { id }, crypto.randomUUID());
+```
+
+Two users in the same tenant can try the same item with distinct keys. One reservation succeeds, the other returns HTTP 409, and the live availability list removes the item. Replaying the successful request with its original key returns the stored result. The integration suite checks the same scenario on both engines.
+
+### Join and aggregate tenant data with a live report
+
+The example's `billing.monthly` query joins `charges` to `items` and groups the results by billing period. In your own handler, use `ctx.data.report` with table aliases, qualified columns, and a result limit. It supports inner and left equijoins, grouping by columns, and `count` and `sum`. The root table is filtered by the verified tenant. Each join adds its own tenant condition in `ON`, preserving the behavior of left joins. Filters under `where` apply after the join. For a left join, use `count` with a joined column to count matches. Projected aggregates use decimal strings to preserve precision, and an empty sum is null.
+
+```ts
+await client.mutate(
+  'billing.add_charge',
+  { itemId: id, period: '2026-11', amountCents: 1250 },
+  crypto.randomUUID(),
+);
+const result = await client.query('billing.monthly', {});
+console.log(result.data); // [{ period: '2026-11', count: '1', total_cents: '1250' }]
+```
+
+Subscribe to `billing.monthly` to refresh the totals after a charge commits. The handler registers table dependencies for both source tables. The integration test verifies that a charge in another tenant stays out of the report. The example also uses a tenant-scoped foreign key to keep each charge linked to its item.
 
 ## 3. Start PostgreSQL and Redis
 
@@ -617,7 +652,7 @@ node --input-type=module <<'JS'
 import { readFileSync, writeFileSync } from 'node:fs';
 const file = '../my-project/project.json';
 const project = JSON.parse(readFileSync(file, 'utf8'));
-project.mysql = { tables: ['items'] };
+project.mysql = { tables: ['items', 'charges'] };
 writeFileSync(file, JSON.stringify(project, null, 2) + '\n');
 JS
 
@@ -638,7 +673,8 @@ GRANT SELECT, UPDATE ON reactivecore_my_project.rc_commit_clock TO 'reactivecore
 GRANT SELECT, INSERT, UPDATE ON reactivecore_my_project.rc_receipts TO 'reactivecore_app'@'%';
 GRANT SELECT, INSERT ON reactivecore_my_project.rc_changes TO 'reactivecore_app'@'%';
 GRANT INSERT ON reactivecore_my_project.rc_outbox TO 'reactivecore_app'@'%';
-GRANT SELECT, INSERT, UPDATE (title, version), DELETE ON reactivecore_my_project.items TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT, UPDATE (title, version, reserved_by), DELETE ON reactivecore_my_project.items TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT ON reactivecore_my_project.charges TO 'reactivecore_app'@'%';
 GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
     ON reactivecore_my_project.rc_outbox TO 'reactivecore_worker'@'%';
 SQL
@@ -655,11 +691,25 @@ Use the API and worker commands from step 5 in separate terminals. In each termi
 
 Repeat steps 6–8. The first query returns an empty list, the mutation creates one item even when replayed with the same key, and Vue or Next.js receives the update without a page reload. Health reports the active engine under `services.mysql`. Stop the runtime processes, then run `docker stop reactivecore-guide-mysql` to stop the local database.
 
-**Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. The MySQL handler context rejects raw `ctx.client` access. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. Remote MySQL offerings have yet to be validated.
+**Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. Use the structured interface for portability. Trusted MySQL handlers can opt in to [native MySQL SQL](#use-native-mysql-sql) with explicit tenant predicates. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. Remote MySQL offerings have yet to be validated.
 
 The generated client also exposes version-checked `items.update` and `items.delete`. See [Resolve an offline edit conflict](#resolve-an-offline-edit-conflict).
 
 The MySQL CI test uses a disposable database and the same application fixture as PostgreSQL. It checks repeatable provisioning, isolation between tenants, rollback when the outbox write fails, concurrent idempotent replay, SSE delivery and reconnection, tenant-scoped updates and deletes, detail subscriptions, and worker acknowledgement.
+
+### Use native MySQL SQL
+
+For an engine-specific handler, set `mysql.nativeSql` to `true` in `project.json` alongside the existing `mysql.tables` list. Restart the API. The handler receives `ctx.mysqlSql`, which runs prepared statements on the current transaction. Query handlers can use `SELECT`. Mutation handlers can also use `INSERT`, `UPDATE`, and `DELETE`.
+
+```js
+const { rows } = await ctx.mysqlSql.execute(
+  'SELECT id, title FROM items WHERE tenant_id = ? ORDER BY id LIMIT 20',
+  [ctx.principal.tenantId],
+);
+return rows;
+```
+
+Enable this option only for trusted project code. The handler must explicitly scope every table, join, and write to the authenticated tenant. MySQL does not apply PostgreSQL row-level security to this SQL. Keep statements in the application source, bind request values, and grant the runtime role only the required database privileges. Register query dependencies and mutation changes just as with `ctx.data`. Use `ctx.data` when you want the same handler to run on both engines.
 
 ## 9. Configure a production deployment
 

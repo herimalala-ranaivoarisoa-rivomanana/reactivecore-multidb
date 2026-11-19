@@ -102,7 +102,7 @@ export class DatabaseService implements OnModuleDestroy, QuerySnapshotStore {
   async snapshotTenantTransaction<T>(
     tenantId: string,
     callback: (
-      access: Pick<QueryContext, 'client' | 'data'>,
+      access: Pick<QueryContext, 'client' | 'data' | 'mysqlSql'>,
       snapshotSeq: string,
     ) => Promise<T>,
   ): Promise<T> {

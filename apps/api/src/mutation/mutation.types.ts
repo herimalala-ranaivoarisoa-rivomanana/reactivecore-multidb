@@ -1,3 +1,4 @@
+import type { MysqlNativeSql } from '../database/mysql/mysql-native-sql.js';
 import type { PoolClient } from 'pg';
 import type { TenantWriter } from '../database/tenant-data.js';
 import type { QueryPrincipal } from '../reactive/contracts/query-context.js';
@@ -24,6 +25,8 @@ export interface MutationResult {
 export interface MutationContext {
   /** PostgreSQL SQL access for existing handlers. */
   client: PoolClient;
+  /** Opt-in SQL for trusted MySQL handlers. Tenant filters are the caller’s responsibility. */
+  mysqlSql?: MysqlNativeSql;
   data: TenantWriter;
   principal: MutationPrincipal;
   /** Records a change to persist in the journal and outbox in the same commit. */

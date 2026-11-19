@@ -1,6 +1,6 @@
 # ReactiveCore MultiDB
 
-**A self-hosted reactive backend with offline mutations, PostgreSQL support, and a MySQL preview.**
+**A self-hosted backend with real-time queries, database transactions, and offline mutation support.**
 
 This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL 16 is the established storage engine. MySQL 8.4 is available as a preview for applications using the structured tenant data interface. Both run the same item example and HTTP/SSE client.
 
@@ -8,15 +8,9 @@ You supply the schema, queries, mutations, and access policies. ReactiveCore iso
 
 This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend for a live item list. You can replace either example with your own application.
 
-**Preview release.** See [MultiDB v0.2.0-alpha.3](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.3) for the Linux amd64 runtime image and TypeScript SDK. The [operations guide](OPERATIONS.md#install-a-release) shows how to verify and load the release artifacts.
+**Release status.** The published alpha includes a Docker runtime for Linux amd64 and a TypeScript SDK. [Download v0.2.0-alpha.3](#download-v020-alpha3)
 
 [Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Next.js conflict example](#run-the-nextjs-offline-conflict-example) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
-
-### Storage adapter progress
-
-The mutation engine uses an internal [mutation storage contract](apps/api/src/mutation/mutation-store.ts). Its [PostgreSQL implementation](apps/api/src/mutation/postgres-mutation-store.ts) reserves the idempotency key and commits the handler's business write, receipt, change log, and outbox in one transaction. Retries are limited to errors the adapter identifies as rolled back. The PostgreSQL integration suite checks that replays return the same result and that subscribers and the outbox worker see the committed change.
-
-The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). The worker claims, retries, and acknowledges deliveries through an [outbox storage contract](apps/api/src/outbox/outbox-store.ts). Both adapters implement these contracts. The item example uses the [tenant data interface](apps/api/src/database/tenant-data.ts) for filtered and paginated reads, grouped reports, row locks, inserts, updates, and deletes. The MySQL preview covers this interface and its InnoDB migrations.
 
 ## 1. Install the prerequisites
 
@@ -596,6 +590,18 @@ For offline edits, store the version the user saw together with the draft fields
 
 The [example](examples/next-offline-conflicts) combines the IndexedDB queue, version-checked item mutations, SSE, and a service worker for reloading the app shell offline. It connects to the same backend on PostgreSQL or MySQL.
 
+| Behavior | What you can verify |
+| --- | --- |
+| Persistent drafts | Queue an edit offline and reload the app shell. The draft remains in IndexedDB for the same identity. |
+| Tenant and user isolation | Local snapshots and queue records are scoped to the signed-in identity. |
+| Safe retries | If the server commits a mutation and the response is lost, retrying with the original idempotency key returns the stored result. |
+| Conflict resolution | Compare the queued draft with the latest server snapshot, then discard it or submit a new edit against the latest version. |
+| Browser regression coverage | Run the Chromium scenario against PostgreSQL or MySQL. |
+
+The application decides how to display pending work. A task can appear immediately as a provisional row. A sales application can show a pending sale while displaying the last confirmed stock. If two devices sell the last unit offline, the server can accept one sale and reject the other when the mutation checks and updates stock in the same transaction. The local queue records the intent. The server transaction validates the business operation.
+
+The service worker makes the example's app shell reloadable offline after its initial online setup. The example also persists snapshots it has already received. Opening a page the browser has never visited depends on the application's caching strategy.
+
 1. Start the API and worker using the PostgreSQL setup or the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Add `http://127.0.0.1:4173` to `RC_CORS_ORIGINS` before starting the API. Use the item schema and handlers from this repository so reads include a version.
 2. From the repository root, build and serve the static Next.js example.
 
@@ -720,6 +726,26 @@ See the [operations guide](OPERATIONS.md) for release artifacts, container deplo
 3. Serve the API over HTTPS. Allow the frontend origins in `RC_CORS_ORIGINS` and configure the reverse proxy to stream SSE without response buffering. Set `RC_HOST` and `PORT` for your deployment. If you override `RC_INVALIDATION_CHANNEL`, give the API and worker the same value.
 4. Monitor `/api/health/live` and `/api/health/ready`. Monitor Redis separately through `/api/health`. The durable change log lets the subscription engine catch up when Redis is unavailable. Deploy trusted project modules with the API and use separate deployments and credentials for applications operated by independent teams.
 
+## Download v0.2.0-alpha.3
+
+The published alpha includes a Linux amd64 runtime image and a TypeScript SDK. All three files are available on the release page. [GitHub Releases](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.3)
+
+- [Docker runtime archive](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/reactivecore-multidb-v0.2.0-alpha.3-linux-amd64.tar.gz)
+- [TypeScript SDK package](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/reactivecore-client-0.2.0-alpha.3.tgz)
+- [SHA-256 checksums](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/download/v0.2.0-alpha.3/SHA256SUMS)
+
+For a packaged deployment, follow the steps to verify the downloads, load the Docker image, and start the API and worker. The local setup guide builds from source and walks through creating a Vue or Next.js frontend. [Packaged deployment guide](OPERATIONS.md#install-a-release) · [Local setup guide](#1-install-the-prerequisites)
+
+### Release validation
+
+| Area | What was verified |
+| --- | --- |
+| PostgreSQL 16 and MySQL 8.4 | Integration tests passed on both engines. The validation workflow exercises API replica failover, database connection loss, mutation replay with the original idempotency key, and recovery of SSE and outbox delivery. |
+| Packaged SDK and runtime | The release workflow tested the Docker image and the Next.js offline conflict example with the published SDK package. |
+| MySQL restore | A logical backup was restored to a separate local MySQL 8.4 instance over TLS. The test recovered the original mutation receipt and verified SSE and outbox delivery for a new write. |
+
+PostgreSQL 16 is the established engine. MySQL 8.4 is a preview for applications using the structured tenant data interface. Validation on Neon and Amazon RDS, including an RDS snapshot restore, is pending. Use this alpha for development and evaluation. [Release notes](docs/releases/0.2.0-alpha.3.md) · [Cloud validation guide](OPERATIONS.md#prepare-the-provider-validation)
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -749,6 +775,12 @@ node --env-file=.env.reactivecore-test scripts/test-project.mjs
 
 The integration test creates a temporary project and verifies generated types, migrations, idempotency, live updates, worker acknowledgement, and restoration from a PostgreSQL backup.
 
+
+### How the storage adapters work
+
+The mutation engine uses an internal [mutation storage contract](apps/api/src/mutation/mutation-store.ts). Its [PostgreSQL implementation](apps/api/src/mutation/postgres-mutation-store.ts) reserves the idempotency key and commits the handler's business write, receipt, change log, and outbox in one transaction. Retries are limited to errors the adapter identifies as rolled back. The PostgreSQL integration suite checks that replays return the same result and that subscribers and the outbox worker see the committed change.
+
+The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). The worker claims, retries, and acknowledges deliveries through an [outbox storage contract](apps/api/src/outbox/outbox-store.ts). Both adapters implement these contracts. The item example uses the [tenant data interface](apps/api/src/database/tenant-data.ts) for filtered and paginated reads, grouped reports, row locks, inserts, updates, and deletes. The MySQL preview covers this interface and its InnoDB migrations.
 
 ### Measure local mutation and SSE load
 

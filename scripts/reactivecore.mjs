@@ -205,6 +205,76 @@ async function apply(client, files) {
 }
 
 async function administer(adminUrl, database, name, create, callback) {
+  const managed = process.env.RC_PROVISION_EXISTING_DATABASE === '1';
+
+  async function useDatabase(url, fresh) {
+    await connected(url, async (client) => {
+      await client.query(
+        "SELECT pg_advisory_lock(hashtext('reactivecore-cli:database')::bigint)",
+      );
+      await client.query('SET search_path TO public');
+      const marker = await client.query(
+        "SELECT to_regclass('reactivecore_cli.project') IS NOT NULL AS found",
+      );
+      if (!marker.rows[0].found) {
+        if (!create || (!fresh && !managed))
+          throw new Error('Existing database is not managed by the CLI');
+        if (managed) {
+          const {
+            rows: [state],
+          } = await client.query(`
+            SELECT EXISTS (
+              SELECT FROM pg_namespace
+              WHERE nspname NOT IN ('public', 'information_schema')
+                AND nspname !~ '^pg_'
+              UNION ALL
+              SELECT FROM pg_depend
+              WHERE refclassid = 'pg_namespace'::regclass
+                AND refobjid = 'public'::regnamespace
+              UNION ALL
+              SELECT FROM pg_extension WHERE extname <> 'plpgsql'
+            ) AS occupied
+          `);
+          if (state.occupied)
+            throw new Error(
+              'Managed provisioning requires a dedicated empty database',
+            );
+        }
+        await client.query('BEGIN');
+        try {
+          await client.query(`
+            CREATE SCHEMA reactivecore_cli;
+            REVOKE ALL ON SCHEMA reactivecore_cli FROM PUBLIC;
+            CREATE TABLE reactivecore_cli.project (name text PRIMARY KEY);
+            CREATE TABLE reactivecore_cli.migrations (name text PRIMARY KEY, hash text NOT NULL)
+          `);
+          await client.query(
+            'INSERT INTO reactivecore_cli.project VALUES ($1)',
+            [name],
+          );
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        }
+      }
+      const project = await client.query(
+        'SELECT name FROM reactivecore_cli.project',
+      );
+      if (project.rowCount !== 1 || project.rows[0].name !== name)
+        throw new Error('Database belongs to another project');
+      await callback(client);
+    });
+  }
+
+  if (managed) {
+    if (decodeURIComponent(new URL(adminUrl).pathname) !== `/${database}`)
+      throw new Error(
+        `RC_PROVISION_ADMIN_URL must point to ${database} in existing database mode`,
+      );
+    return useDatabase(adminUrl, false);
+  }
+
   await connected(databaseUrl(adminUrl, 'postgres'), async (server) => {
     await server.query(
       "SELECT pg_advisory_lock(hashtext('reactivecore-cli:provision')::bigint)",
@@ -218,32 +288,7 @@ async function administer(adminUrl, database, name, create, callback) {
       if (!create) throw new Error('Provision the project first');
       await server.query(`CREATE DATABASE "${database}"`);
     }
-    await connected(databaseUrl(adminUrl, database), async (client) => {
-      if (fresh) {
-        await client.query(
-          `BEGIN;
-           CREATE SCHEMA reactivecore_cli;
-           REVOKE ALL ON SCHEMA reactivecore_cli FROM PUBLIC;
-           CREATE TABLE reactivecore_cli.project (name text PRIMARY KEY);
-           CREATE TABLE reactivecore_cli.migrations (name text PRIMARY KEY, hash text NOT NULL);`,
-        );
-        await client.query('INSERT INTO reactivecore_cli.project VALUES ($1)', [
-          name,
-        ]);
-        await client.query('COMMIT');
-      }
-      const marker = await client.query(
-        "SELECT to_regclass('reactivecore_cli.project') IS NOT NULL AS found",
-      );
-      if (!marker.rows[0].found)
-        throw new Error('Existing database is not managed by the CLI');
-      const project = await client.query(
-        'SELECT name FROM reactivecore_cli.project',
-      );
-      if (project.rowCount !== 1 || project.rows[0].name !== name)
-        throw new Error('Database belongs to another project');
-      await callback(client);
-    });
+    await useDatabase(databaseUrl(adminUrl, database), fresh);
   });
 }
 
@@ -264,6 +309,7 @@ async function start(command, directory, name, database) {
       process.env.RC_INVALIDATION_CHANNEL ?? `reactivecore:project:${name}`,
   };
   delete runtimeEnv.RC_PROVISION_ADMIN_URL;
+  delete runtimeEnv.RC_PROVISION_EXISTING_DATABASE;
   delete runtimeEnv.RC_PROVISION_APP_PASSWORD;
   delete runtimeEnv.RC_PROVISION_WORKER_PASSWORD;
   if (command === 'serve') {

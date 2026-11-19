@@ -63,6 +63,7 @@ function cli(command, ...args) {
   if (image && ['provision', 'tenant'].includes(command)) {
     const keys = [
       'RC_PROVISION_ADMIN_URL',
+      'RC_PROVISION_EXISTING_DATABASE',
       'RC_PROVISION_APP_PASSWORD',
       'RC_PROVISION_WORKER_PASSWORD',
     ];
@@ -90,6 +91,9 @@ function cli(command, ...args) {
     { env },
   );
 }
+const managed = process.env.RC_TEST_MANAGED_DATABASE === '1';
+const owner = `${database}_owner`;
+let ownsRole = false;
 const origin = 'http://127.0.0.1:4403';
 let server;
 let worker;
@@ -243,6 +247,53 @@ void client.mutate('items.create', { title: 42 }, 'id');
     'node',
     typed,
   ]);
+  if (managed) {
+    const admin = new pg.Client({
+      connectionString: env.RC_PROVISION_ADMIN_URL,
+    });
+    const password = randomUUID();
+    await admin.connect();
+    try {
+      const {
+        rows: [role],
+      } = await admin.query(
+        "SELECT format('CREATE ROLE %I LOGIN NOCREATEDB NOCREATEROLE PASSWORD %L', $1::text, $2::text) AS sql",
+        [owner, password],
+      );
+      await admin.query(role.sql);
+      ownsRole = true;
+      await admin.query(`CREATE DATABASE "${databaseName}" OWNER "${owner}"`);
+      ownsDatabase = true;
+      // Prepare the runtime roles using the existing cluster bootstrap path.
+      await admin.query(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'reactivecore_app' AND rolcanlogin)
+          OR NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'reactivecore_worker' AND rolcanlogin)
+        THEN RAISE EXCEPTION 'Run the standard integration test before managed mode'; END IF;
+      END $$`);
+    } finally {
+      await admin.end();
+    }
+
+    env.RC_PROVISION_ADMIN_URL = pgUrl(owner, password, databaseName);
+    env.RC_PROVISION_EXISTING_DATABASE = '1';
+    delete env.RC_PROVISION_APP_PASSWORD;
+    delete env.RC_PROVISION_WORKER_PASSWORD;
+    const projectAdmin = new pg.Client({
+      connectionString: env.RC_PROVISION_ADMIN_URL,
+    });
+    await projectAdmin.connect();
+    try {
+      await projectAdmin.query('CREATE TABLE public.unrelated_data (id int)');
+      await assert.rejects(
+        cli('provision', directory),
+        /dedicated empty database/,
+      );
+      await projectAdmin.query('DROP TABLE public.unrelated_data');
+    } finally {
+      await projectAdmin.end();
+    }
+  }
+
   const created = await cli('provision', directory);
   ownsDatabase = true;
   assert.match(created.stdout, /Applied project\/001_items.sql/);
@@ -437,13 +488,14 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     await closed;
   }
   try {
-    if (ownsDatabase) {
+    if (ownsDatabase || ownsRole) {
       const admin = new pg.Client({
-        connectionString: env.RC_PROVISION_ADMIN_URL,
+        connectionString: pgUrl('reactivecore', adminPassword, 'postgres'),
       });
       await admin.connect();
       try {
-        await admin.query(`DROP DATABASE "${databaseName}"`);
+        if (ownsDatabase) await admin.query(`DROP DATABASE "${databaseName}"`);
+        if (ownsRole) await admin.query(`DROP ROLE "${owner}"`);
       } finally {
         await admin.end();
       }

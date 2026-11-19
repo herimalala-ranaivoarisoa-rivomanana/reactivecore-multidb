@@ -2,7 +2,7 @@
 
 **A self-hosted reactive backend with offline mutation support and a roadmap for multiple database engines.**
 
-This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL is the supported storage engine today. The next milestones are validating managed PostgreSQL deployments and adding a storage adapter with shared tests for transactions, tenant isolation, idempotency, and live updates.
+This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL is the supported storage engine today. The CLI supports pre-created PostgreSQL databases. The next milestones are validating specific managed offerings and adding a storage adapter with shared tests for transactions, tenant isolation, idempotency, and live updates.
 
 You supply the schema, queries, mutations, and access policies. ReactiveCore isolates data by tenant and delivers query updates over HTTP/SSE. The TypeScript SDK reconnects subscriptions and provides a persistent offline mutation queue.
 
@@ -74,6 +74,8 @@ docker compose -p reactivecore-guide --env-file ../my-project/.env.compose ps
 Both services should report healthy. The Compose file binds PostgreSQL and Redis to loopback. Use these sample passwords only on a local machine.
 
 ## 4. Provision the database and register a tenant
+
+The commands below let the CLI create the database. To prepare the database and roles first, use the [managed PostgreSQL walkthrough](OPERATIONS.md#use-a-managed-postgresql-database) in place of this step.
 
 ```sh
 export RC_PROVISION_ADMIN_URL=postgresql://reactivecore:local_admin_password@127.0.0.1:56432/postgres

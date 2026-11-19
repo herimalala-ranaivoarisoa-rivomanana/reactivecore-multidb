@@ -22,3 +22,5 @@ jobs:
       - run: npm test
       - run: node scripts/test-infra.mjs
       - run: node --env-file=.env.reactivecore-test scripts/test-project.mjs
+      - name: Verify managed PostgreSQL provisioning
+        run: RC_TEST_MANAGED_DATABASE=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs

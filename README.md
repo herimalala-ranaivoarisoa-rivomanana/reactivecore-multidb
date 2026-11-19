@@ -1,12 +1,14 @@
-# ReactiveCore
+# ReactiveCore MultiDB
 
-**A self-hosted backend with real-time queries, PostgreSQL transactions, and offline mutation support.**
+**A self-hosted reactive backend with offline mutation support and a roadmap for multiple database engines.**
+
+This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL is the supported storage engine today. The next milestones are validating managed PostgreSQL deployments and adding a storage adapter with shared tests for transactions, tenant isolation, idempotency, and live updates.
 
 You supply the schema, queries, mutations, and access policies. ReactiveCore isolates data by tenant and delivers query updates over HTTP/SSE. The TypeScript SDK reconnects subscriptions and provides a persistent offline mutation queue.
 
 This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend for a live item list. You can replace either example with your own application.
 
-**Release status.** Run ReactiveCore from source today. The GitHub release workflow is ready for the first alpha tag, and the first publication is pending.
+**Release status.** Run ReactiveCore MultiDB from source. The upstream alpha is available from the original ReactiveCore repository.
 
 [Local setup](#1-install-the-prerequisites) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
@@ -15,8 +17,8 @@ This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend
 Install Node.js 24 or later, npm, Docker with the Compose plugin, and curl. Run the commands below in a Bash shell from the ReactiveCore repository root, including when opening additional terminals.
 
 ```sh
-git clone https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore.git
-cd reactivecore
+git clone https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb.git
+cd reactivecore-multidb
 npm ci
 npm run build
 ```

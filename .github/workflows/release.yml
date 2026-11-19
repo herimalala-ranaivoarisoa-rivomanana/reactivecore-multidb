@@ -1,4 +1,4 @@
-name: Build and release ReactiveCore alpha
+name: Build and release ReactiveCore MultiDB alpha
 
 on:
   push:
@@ -34,14 +34,14 @@ jobs:
           npm pack -w @reactivecore/client --pack-destination dist-release
           docker build --label "org.opencontainers.image.version=${GITHUB_REF_NAME#v}" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --platform linux/amd64 -t "reactivecore:$GITHUB_REF_NAME" .
-          docker save "reactivecore:$GITHUB_REF_NAME" | gzip -n > "dist-release/reactivecore-$GITHUB_REF_NAME-linux-amd64.tar.gz"
-          docker image rm "reactivecore:$GITHUB_REF_NAME"
-          docker load -i "dist-release/reactivecore-$GITHUB_REF_NAME-linux-amd64.tar.gz"
+            --platform linux/amd64 -t "reactivecore-multidb:$GITHUB_REF_NAME" .
+          docker save "reactivecore-multidb:$GITHUB_REF_NAME" | gzip -n > "dist-release/reactivecore-multidb-$GITHUB_REF_NAME-linux-amd64.tar.gz"
+          docker image rm "reactivecore-multidb:$GITHUB_REF_NAME"
+          docker load -i "dist-release/reactivecore-multidb-$GITHUB_REF_NAME-linux-amd64.tar.gz"
       - run: node scripts/test-infra.mjs
       - name: Verify the packaged SDK and runtime image
         run: |
-          export RC_TEST_IMAGE="reactivecore:$GITHUB_REF_NAME"
+          export RC_TEST_IMAGE="reactivecore-multidb:$GITHUB_REF_NAME"
           export RC_TEST_SDK_ARCHIVE="dist-release/reactivecore-client-${GITHUB_REF_NAME#v}.tgz"
           node --env-file=.env.reactivecore-test scripts/test-project.mjs
       - name: Write checksums

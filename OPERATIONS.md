@@ -1,15 +1,15 @@
-# ReactiveCore operations
+# ReactiveCore MultiDB operations
 
 These instructions cover the Linux amd64 alpha image, an existing PostgreSQL 16 server, and Redis. The Docker image runs the provisioning CLI, HTTP API, and outbox worker. Run a separate API and worker for each project.
 
 ## Install a release
 
-Once the first GitHub prerelease is published, download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Until then, follow the [source setup](README.md#1-install-the-prerequisites). Verify the downloads and load the image. Replace the version in the commands with the published tag.
+Once this repository publishes a GitHub prerelease, download the runtime archive, SDK tarball, and `SHA256SUMS` from that release. Until then, follow the [source setup](README.md#1-install-the-prerequisites). Verify the downloads and load the image. Replace the version in the commands with the published tag.
 
 ```sh
 sha256sum -c SHA256SUMS
-docker load -i reactivecore-v0.1.0-linux-amd64.tar.gz
-export RC_IMAGE=reactivecore:v0.1.0
+docker load -i reactivecore-multidb-v0.1.0-linux-amd64.tar.gz
+export RC_IMAGE=reactivecore-multidb:v0.1.0
 ```
 
 To install the SDK from that release, run `npm install ./reactivecore-client-0.1.0.tgz` from your frontend. The release workflow publishes both files to GitHub Releases.

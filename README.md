@@ -8,7 +8,7 @@ You supply the schema, queries, mutations, and access policies. ReactiveCore iso
 
 This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend for a live item list. You can replace either example with your own application.
 
-**Preview release.** See [MultiDB v0.2.0-alpha.2](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.2) for the Linux amd64 runtime image and TypeScript SDK. The [operations guide](OPERATIONS.md#install-a-release) shows how to verify and load the release artifacts.
+**Preview release.** See [MultiDB v0.2.0-alpha.3](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore-multidb/releases/tag/v0.2.0-alpha.3) for the Linux amd64 runtime image and TypeScript SDK. The [operations guide](OPERATIONS.md#install-a-release) shows how to verify and load the release artifacts.
 
 [Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Next.js conflict example](#run-the-nextjs-offline-conflict-example) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
@@ -275,7 +275,7 @@ cp ../my-project/client.ts ../my-project-web/src/reactivecore-client.ts
 
 cd ../my-project-web
 npm install
-npm install ./reactivecore-client-0.2.0-alpha.2.tgz
+npm install ./reactivecore-client-0.2.0-alpha.3.tgz
 ```
 
 Use the filename printed by `npm pack` if your SDK version differs. After changing the backend's function contracts, rerun `codegen` from the ReactiveCore repository and copy the new file into `src/reactivecore-client.ts`.
@@ -353,7 +353,7 @@ npm pack -w @reactivecore/client --pack-destination ../my-project-next
 cp ../my-project/client.ts ../my-project-next/src/reactivecore-client.ts
 
 cd ../my-project-next
-npm install ./reactivecore-client-0.2.0-alpha.2.tgz
+npm install ./reactivecore-client-0.2.0-alpha.3.tgz
 ```
 
 From `my-project-next`, replace the starter layout and home page. The layout uses system fonts, and the Client Component opens the subscription in the browser.

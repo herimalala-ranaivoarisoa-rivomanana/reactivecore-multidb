@@ -129,17 +129,32 @@ export class SubscriptionManagerService
     if (this.closed || this.polling || this.subscriptions.size === 0) return;
     this.polling = true;
     try {
-      const through = await this.journal.currentSeq();
+      const boundaries = new Map<string, string>();
+      const batches = new Map<
+        string,
+        Awaited<ReturnType<typeof this.journal.readBatch>>
+      >();
       for (const [id, subscription] of this.subscriptions) {
         if (this.running.has(id) || subscription.dirty || subscription.retry)
           continue;
         const after = subscription.coveredSeq;
-        if (BigInt(after) >= BigInt(through)) continue;
-        const batch = await this.journal.readBatch(
-          subscription.principal.tenantId,
-          after,
-          through,
-        );
+        const tenantId = subscription.principal.tenantId;
+        let through = boundaries.get(tenantId);
+        if (through === undefined) {
+          through = await this.journal.currentSeq(tenantId);
+          boundaries.set(tenantId, through);
+        }
+        if (BigInt(after) > BigInt(through)) {
+          this.markDirty(id, subscription);
+          continue;
+        }
+        if (after === through) continue;
+        const key = JSON.stringify([tenantId, after]);
+        let batch = batches.get(key);
+        if (!batch) {
+          batch = await this.journal.readBatch(tenantId, after, through);
+          batches.set(key, batch);
+        }
         if (
           !this.subscriptions.has(id) ||
           this.running.has(id) ||
@@ -147,11 +162,13 @@ export class SubscriptionManagerService
           subscription.coveredSeq !== after
         )
           continue;
-        const affected = batch.changes.some((change) =>
-          subscription.dependencies.some((dependency) =>
-            this.invalidation.affects(dependency, change),
-          ),
-        );
+        const affected =
+          batch.gap ||
+          batch.changes.some((change) =>
+            subscription.dependencies.some((dependency) =>
+              this.invalidation.affects(dependency, change),
+            ),
+          );
         if (affected) this.markDirty(id, subscription);
         else subscription.coveredSeq = batch.coveredSeq;
       }
@@ -202,7 +219,9 @@ export class SubscriptionManagerService
         if (!this.subscriptions.has(id)) return;
         // Check the journal even if Redis was offline throughout the initial read.
         if (subscription.revision === 0 && attempt === 0) {
-          const through = await this.journal.currentSeq();
+          const through = await this.journal.currentSeq(
+            subscription.principal.tenantId,
+          );
           if (
             await this.journal.hasChanges(
               subscription.principal.tenantId,
@@ -219,9 +238,12 @@ export class SubscriptionManagerService
 
         this.index.replace(id, result.dependencies);
         subscription.dependencies = result.dependencies;
+        const rewound =
+          BigInt(result.snapshotSeq) < BigInt(subscription.coveredSeq);
         subscription.coveredSeq = result.snapshotSeq;
         if (
           subscription.revision === 0 ||
+          rewound ||
           !isDeepStrictEqual(subscription.data, result.data)
         ) {
           subscription.data = result.data;

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnprocessableEntityException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import {
   ChangeLogService,
@@ -14,8 +14,10 @@ export class MutationCommitService {
     tenantId: string,
     changes: readonly JournalChange[],
   ): Promise<string> {
-    if (changes.length === 0)
-      throw new Error('A successful mutation must record a change');
+    if (changes.length === 0 || changes.length > 100)
+      throw new UnprocessableEntityException(
+        'Expected between 1 and 100 recorded changes',
+      );
     const seq = await this.journal.append(client, changes);
     const events = changes.map((change) => ({
       event_id: change.eventId,

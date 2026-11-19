@@ -146,11 +146,6 @@ export default function createApplication({
     }
 
     async list(ctx) {
-      ctx.dependencies.add({
-        kind: 'table',
-        tenantId: ctx.principal.tenantId,
-        table: 'items',
-      });
       return ctx.data.list({
         table: 'items',
         columns: ['id', 'title', 'version'],
@@ -252,13 +247,6 @@ export default function createApplication({
     async create(ctx, { title }) {
       const id = randomUUID();
       await ctx.data.insert('items', { id, title });
-      ctx.recordChange({
-        table: 'items',
-        documentId: id,
-        operation: 'insert',
-        before: null,
-        after: { title, version: 1 },
-      });
       return { id, title };
     }
 

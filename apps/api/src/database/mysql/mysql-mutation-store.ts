@@ -1,5 +1,9 @@
 import { mysqlNativeSql } from './mysql-native-sql.js';
-import { Injectable } from '@nestjs/common';
+import {
+  GoneException,
+  Injectable,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import {
   MutationStore,
@@ -53,13 +57,15 @@ export class MysqlMutationStore extends MutationStore {
             if (errorCode(error) !== 'ER_DUP_ENTRY') throw error;
           }
           const [rows] = await connection.execute<RowDataPacket[]>(
-            `SELECT request_hash, response, commit_seq FROM rc_receipts
+            `SELECT request_hash, response, response_expired, commit_seq FROM rc_receipts
            WHERE tenant_id = ? AND principal_id = ? AND mutation_name = ? AND idempotency_key = ? FOR UPDATE`,
             key,
           );
           const receipt = rows[0];
           if (receipt?.commit_seq == null)
             throw new Error('Incomplete mutation receipt');
+          if (receipt.response_expired)
+            throw new GoneException('Mutation response retention has expired');
           return {
             requestHash: receipt.request_hash,
             response: receipt.response,
@@ -68,12 +74,19 @@ export class MysqlMutationStore extends MutationStore {
         },
         complete: async (response, changes) => {
           if (changes.length === 0 || changes.length > 100)
-            throw new Error('Expected between 1 and 100 changes');
+            throw new UnprocessableEntityException(
+              'Expected between 1 and 100 recorded changes',
+            );
 
-          await connection.query(
-            'UPDATE rc_commit_clock SET last_seq = last_seq + 1 WHERE id = 1',
+          await connection.execute(
+            `INSERT INTO rc_tenant_clocks (tenant_id, last_seq) VALUES (?, 1)
+             ON DUPLICATE KEY UPDATE last_seq = last_seq + 1`,
+            [scope.tenantId],
           );
-          const seq = await this.database.currentSeq(connection);
+          const seq = await this.database.currentSeq(
+            scope.tenantId,
+            connection,
+          );
           for (const [ordinal, change] of changes.entries()) {
             await connection.execute(
               `INSERT INTO rc_changes

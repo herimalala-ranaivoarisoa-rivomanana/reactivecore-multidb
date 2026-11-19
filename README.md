@@ -51,9 +51,12 @@ This command creates the backend project. Step 8 creates the frontend separately
 | `migrations/*.sql` | Define your tables, indexes, row-level security policies, and runtime grants. Add a numbered migration for each later schema change. |
 | `client.ts` | Import the generated `createClient` in a TypeScript app. Rerun `codegen` after changing the manifest. |
 
-Read the [example application](scripts/test-fixtures/project/application.mjs) and its [migration](scripts/test-fixtures/project/migrations/001_items.sql). The `items.list` query filters by the authenticated tenant and registers a table dependency. The `items.create` mutation validates the title, inserts a row, and calls `ctx.recordChange` in the same transaction. The change journal lets the engine refresh subscriptions that depend on the affected table. The database policy also enforces the tenant boundary.
+Read the [example application](scripts/test-fixtures/project/application.mjs) and its [migration](scripts/test-fixtures/project/migrations/001_items.sql). The `items.list` query reads through `ctx.data`, which filters by the authenticated tenant and tracks a table dependency. The `items.create` mutation validates the title and inserts a row through `ctx.data`. The engine records the change in the same transaction and uses it to refresh subscriptions. PostgreSQL row-level security also enforces the tenant boundary.
 
 ### Access tenant data from application functions
+
+`ctx.data` tracks point reads by document and list and report reads by table, including joined tables. Mutations using `ctx.data` automatically record successful writes with a UUID `id`. Supply the UUID explicitly when inserting a row. Native SQL, database-generated IDs, triggers, and cascading writes require explicit dependency or change records for any affected data that the structured operations did not track. If no changes are recorded, or the mutation records more than 100 changes, the server rolls it back and returns HTTP 422.
+
 
 Use `ctx.data.get({ table, id, columns })` to read one row by ID. It returns `null` if the row is missing or belongs to another tenant. The `items.get` handler registers a dependency on that exact item, so editing or deleting it refreshes the detail subscription. A deletion delivers a snapshot with `data: null`.
 
@@ -82,7 +85,7 @@ Use a `tenant_id` column and a stable `id` that uniquely identifies a row within
 
 For an existing copy of the PostgreSQL item example, add the [write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) the [version migration](scripts/test-fixtures/project/migrations/003_item_versions.sql), and the [reservation migration](scripts/test-fixtures/project/migrations/004_item_reservations.sql), then add the [billing migration](scripts/test-fixtures/project/migrations/005_item_charges.sql) and run provisioning again before using the new functions. On MySQL, apply the [version migration](scripts/test-fixtures/project/migrations/mysql/002_item_versions.sql), the [reservation migration](scripts/test-fixtures/project/migrations/mysql/003_item_reservations.sql), the [billing migration](scripts/test-fixtures/project/migrations/mysql/004_item_charges.sql), and the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Include both `items` and `charges` in `mysql.tables`. Update the application factory and manifest, regenerate the client, and restart the API.
 
-The read interface automatically filters by the authenticated tenant. The write interface supplies `tenant_id` and rejects values that try to set it. The example still registers its query dependency with `ctx.dependencies.add` and records the mutation with `ctx.recordChange`. Those calls tell the reactive engine what to refresh after a commit.
+The read interface automatically filters by the authenticated tenant. The write interface supplies `tenant_id` and rejects values that try to set it. Use `ctx.dependencies.add` and `ctx.recordChange` to describe reads and writes the engine cannot infer, such as native SQL.
 
 Use the structured interface for the operations it supports. Existing PostgreSQL handlers can continue to execute SQL through `ctx.client`. Application code that uses PostgreSQL-specific SQL needs an equivalent implementation before it can run on another engine.
 
@@ -676,6 +679,7 @@ Grant the runtime roles only the operations used by the engine and the example:
 ```sh
 docker exec -i reactivecore-guide-mysql mysql -uroot -plocal_mysql_admin <<'SQL'
 GRANT SELECT, UPDATE ON reactivecore_my_project.rc_commit_clock TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT, UPDATE ON reactivecore_my_project.rc_tenant_clocks TO 'reactivecore_app'@'%';
 GRANT SELECT, INSERT, UPDATE ON reactivecore_my_project.rc_receipts TO 'reactivecore_app'@'%';
 GRANT SELECT, INSERT ON reactivecore_my_project.rc_changes TO 'reactivecore_app'@'%';
 GRANT INSERT ON reactivecore_my_project.rc_outbox TO 'reactivecore_app'@'%';
@@ -762,6 +766,10 @@ To stop the local environment, stop the API, worker, and SSE client with Ctrl+C,
 ```sh
 docker compose -p reactivecore-guide --env-file ../my-project/.env.compose down
 ```
+
+## Database maintenance
+
+Commit sequences are ordered within each tenant. When upgrading from a version with a global clock, apply the migration before restarting the runtime. Journal pruning and receipt response compaction are available as a scheduled maintenance job. [Upgrade and retention instructions](OPERATIONS.md#upgrade-to-tenant-commit-clocks)
 
 ## Verify the engine
 

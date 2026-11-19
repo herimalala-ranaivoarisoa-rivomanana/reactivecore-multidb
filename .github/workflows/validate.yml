@@ -70,9 +70,10 @@ jobs:
           RC_LOAD_CONCURRENCY: '4'
           RC_LOAD_GAP_WRITES: '2'
         run: node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs
-      - name: Verify recovery from database connection loss
+      - name: Verify retention and recovery from database connection loss
         env:
           RC_DATABASE_OUTAGE_TEST: '1'
+          RC_RETENTION_TEST: '1'
           RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}
         run: |
           node --env-file=.env.reactivecore-test scripts/test-project.mjs

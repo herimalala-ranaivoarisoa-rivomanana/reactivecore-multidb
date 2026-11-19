@@ -207,3 +207,100 @@ it('releases an initializing subscription if the connection closes', async () =>
   expect(listener).not.toHaveBeenCalled();
   expect(execute).toHaveBeenCalledTimes(1);
 });
+
+it('shares a catch-up batch for subscriptions with the same tenant and cursor', async () => {
+  const { execute, journal, manager, listener } = scenario();
+  execute.mockResolvedValue({
+    data: 1,
+    snapshotSeq: '1',
+    dependencies: [dependency],
+  });
+  journal.currentSeq.mockResolvedValue('1');
+  const first = await manager.subscribe(principal, 'stocks.list', {}, listener);
+  const second = await manager.subscribe(
+    principal,
+    'stocks.list',
+    {},
+    listener,
+  );
+  try {
+    journal.currentSeq.mockResolvedValue('2');
+    journal.readBatch.mockResolvedValue({ changes: [], coveredSeq: '2' });
+    manager.reconcileAll();
+    await vi.waitFor(() =>
+      expect(journal.readBatch).toHaveBeenCalledExactlyOnceWith(
+        principal.tenantId,
+        '1',
+        '2',
+      ),
+    );
+  } finally {
+    manager.unsubscribe(first);
+    manager.unsubscribe(second);
+  }
+});
+
+it('refreshes subscriptions when the database clock moves backwards', async () => {
+  const { execute, journal, manager, listener } = scenario();
+  execute.mockResolvedValueOnce({
+    data: 1,
+    snapshotSeq: '7',
+    dependencies: [dependency],
+  });
+  journal.currentSeq.mockResolvedValue('7');
+  const id = await manager.subscribe(principal, 'stocks.list', {}, listener);
+  try {
+    execute.mockResolvedValueOnce({
+      data: 1,
+      snapshotSeq: '4',
+      dependencies: [dependency],
+    });
+    journal.currentSeq.mockResolvedValue('4');
+    manager.reconcileAll();
+    await vi.waitFor(() =>
+      expect(listener).toHaveBeenLastCalledWith({
+        subscriptionId: id,
+        data: 1,
+        snapshotSeq: '4',
+        revision: 2,
+      }),
+    );
+  } finally {
+    manager.unsubscribe(id);
+  }
+});
+
+it('refreshes a snapshot when retention has pruned past its cursor', async () => {
+  const { execute, journal, manager, listener } = scenario();
+  execute.mockResolvedValueOnce({
+    data: 1,
+    snapshotSeq: '1',
+    dependencies: [dependency],
+  });
+  journal.currentSeq.mockResolvedValue('1');
+  const id = await manager.subscribe(principal, 'stocks.list', {}, listener);
+  try {
+    execute.mockResolvedValueOnce({
+      data: 2,
+      snapshotSeq: '3',
+      dependencies: [dependency],
+    });
+    journal.currentSeq.mockResolvedValue('3');
+    journal.readBatch.mockResolvedValue({
+      changes: [],
+      coveredSeq: '3',
+      gap: true,
+    });
+    manager.reconcileAll();
+    await vi.waitFor(() =>
+      expect(listener).toHaveBeenLastCalledWith({
+        subscriptionId: id,
+        data: 2,
+        snapshotSeq: '3',
+        revision: 2,
+      }),
+    );
+  } finally {
+    manager.unsubscribe(id);
+  }
+});

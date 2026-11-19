@@ -60,6 +60,7 @@ export class ReactiveStreamService {
 
     response.once('close', close);
     response.on('drain', drain);
+    let lastSequence: bigint | undefined;
     try {
       await this.subscriptions.subscribe(
         principal,
@@ -67,6 +68,13 @@ export class ReactiveStreamService {
         args,
         ({ snapshotSeq, data }) => {
           if (connection.signal.aborted || response.destroyed) return;
+          const sequence = BigInt(snapshotSeq);
+          if (lastSequence !== undefined && sequence < lastSequence) {
+            close();
+            response.end();
+            return;
+          }
+          lastSequence = sequence;
           if (!response.headersSent) {
             response.set({
               'Content-Type': 'text/event-stream; charset=utf-8',

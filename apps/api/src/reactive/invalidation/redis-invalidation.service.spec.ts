@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { invalidationPayload } from '../../outbox/invalidation-payload.js';
 import { parseChange } from './redis-invalidation.service.js';
 
 const tenantId = randomUUID();
@@ -43,4 +44,17 @@ it('ignores malformed and inconsistent change envelopes', () => {
       ),
     ).toBeUndefined();
   }
+});
+
+it('publishes only change metadata, including for older queued outbox events', () => {
+  const payload = invalidationPayload(event.type, event.payload);
+  const message = JSON.stringify({ ...event, payload });
+  expect(message).not.toContain('group_id');
+  expect(parseChange(message)).toMatchObject({
+    tenantId,
+    documentId,
+    table: 'records',
+  });
+  expect(parseChange(message)?.before).toBeUndefined();
+  expect(parseChange(message)?.after).toBeUndefined();
 });

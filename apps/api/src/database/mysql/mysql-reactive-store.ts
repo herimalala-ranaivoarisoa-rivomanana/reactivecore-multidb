@@ -32,14 +32,14 @@ export class MysqlReactiveStore implements QuerySnapshotStore, ChangeFeed {
             mysqlSql: mysqlNativeSql(connection, false),
             data: mysqlTenantData(connection, tenantId),
           },
-          await this.database.currentSeq(connection),
+          await this.database.currentSeq(tenantId, connection),
         ),
       true,
     );
   }
 
-  currentSeq(): Promise<string> {
-    return this.database.currentSeq();
+  currentSeq(tenantId?: string): Promise<string> {
+    return this.database.currentSeq(tenantId);
   }
 
   async hasChanges(
@@ -49,6 +49,11 @@ export class MysqlReactiveStore implements QuerySnapshotStore, ChangeFeed {
   ): Promise<boolean> {
     if (BigInt(afterSeq) >= BigInt(throughSeq)) return false;
     return this.database.transaction(async (connection) => {
+      const [[clock]] = await connection.execute<RowDataPacket[]>(
+        'SELECT pruned_through > CAST(? AS UNSIGNED) AS gap FROM rc_tenant_clocks WHERE tenant_id = ?',
+        [afterSeq, tenantId],
+      );
+      if (clock?.gap) return true;
       const [rows] = await connection.execute<RowDataPacket[]>(
         'SELECT 1 FROM rc_changes WHERE tenant_id = ? AND seq > CAST(? AS UNSIGNED) AND seq <= CAST(? AS UNSIGNED) LIMIT 1',
         [tenantId, afterSeq, throughSeq],
@@ -60,6 +65,11 @@ export class MysqlReactiveStore implements QuerySnapshotStore, ChangeFeed {
   async readBatch(tenantId: string, afterSeq: string, throughSeq: string) {
     const limit = 100;
     return this.database.transaction(async (connection) => {
+      const [[clock]] = await connection.execute<RowDataPacket[]>(
+        'SELECT pruned_through > CAST(? AS UNSIGNED) AS gap FROM rc_tenant_clocks WHERE tenant_id = ?',
+        [afterSeq, tenantId],
+      );
+      if (clock?.gap) return { changes: [], coveredSeq: throughSeq, gap: true };
       const [rows] = await connection.execute<RowDataPacket[]>(
         `WITH commits AS (
            SELECT DISTINCT seq FROM rc_changes

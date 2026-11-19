@@ -8,7 +8,7 @@ export interface SequencedChange extends ChangeDescriptor {
 
 /** Durable, tenant-scoped change feed used to catch subscriptions up to a commit. */
 export abstract class ChangeFeed {
-  abstract currentSeq(): Promise<string>;
+  abstract currentSeq(tenantId?: string): Promise<string>;
 
   abstract hasChanges(
     tenantId: string,
@@ -21,5 +21,5 @@ export abstract class ChangeFeed {
     tenantId: string,
     afterSeq: string,
     throughSeq: string,
-  ): Promise<{ changes: SequencedChange[]; coveredSeq: string }>;
+  ): Promise<{ changes: SequencedChange[]; coveredSeq: string; gap?: boolean }>;
 }

@@ -239,9 +239,9 @@ Redis transports invalidation notifications. PostgreSQL holds the durable outbox
 
 ## Investigate PostgreSQL mutation contention
 
-A mutation can return 503 with `Transaction retry limit exhausted` when PostgreSQL repeatedly aborts the transaction during concurrent writes. Check the server error reason and PostgreSQL logs. The commit clock is a shared row. A serializable transaction may retry when another mutation updates it first.
+A mutation can return 503 with `Transaction retry limit exhausted` when PostgreSQL repeatedly aborts the transaction during concurrent writes. Check the server error reason and PostgreSQL logs. The commit clock has one row per tenant. A serializable transaction may retry when another mutation for the same tenant updates that row first.
 
-Reproduce the workload with the [local matrix](README.md#measure-local-mutation-and-sse-load) and compare HTTP latency, SSE latency, and retry exhaustion. Set `RC_PG_MUTATION_CONCURRENCY=2` on the API to try a bounded admission setting in staging. If the response says `PostgreSQL mutation queue is full`, measure queued requests and reduce the incoming write rate before increasing concurrency. This limit is per API process. Two replicas configured with a cap of two can together run four write transactions against the shared commit clock. Use the [two-replica load and failover test](README.md#compare-two-postgresql-api-instances) when adjusting replica count, because database connection pools and transaction contention also scale with replicas. Keep the same idempotency key when retrying an existing mutation.
+Reproduce the workload with the [local matrix](README.md#measure-local-mutation-and-sse-load) and compare HTTP latency, SSE latency, and retry exhaustion. Set `RC_PG_MUTATION_CONCURRENCY=2` on the API to try a bounded admission setting in staging. If the response says `PostgreSQL mutation queue is full`, measure queued requests and reduce the incoming write rate before increasing concurrency. This limit is per API process. Two replicas configured with a cap of two can together run four write transactions, with commit-clock contention limited to writes for the same tenant. Use the [two-replica load and failover test](README.md#compare-two-postgresql-api-instances) when adjusting replica count, because database connection pools and transaction contention also scale with replicas. Keep the same idempotency key when retrying an existing mutation.
 
 In a local run with 48 subscribers and eight client writers, the three configurations below completed 48 writes each with zero HTTP 503 responses.
 
@@ -277,3 +277,50 @@ Check `/api/health/live` for process liveness, `/api/health/ready` for database 
 ## Cut a release
 
 After reviewing the changes and verifying them in CI, set matching versions in the root and SDK manifests and update the lockfile. Create and push a tag matching the version, such as `v0.2.0-alpha.3`. The tag workflow builds and reloads the image, installs the SDK archive into the Next.js browser example, checks both database engines and a PostgreSQL restore, then publishes a GitHub prerelease with checksums.
+
+## Set SSE limits and retain delivery records
+
+Set `RC_SSE_MAX_STREAMS` and `RC_SSE_MAX_STREAMS_PER_USER` on each API process to override the defaults of 500 and 8. Both values must be positive integers. Large subscriptions send full snapshots when the result changes. Keep query results bounded with filters and pagination, and measure bandwidth and reconnection latency before raising the limits.
+
+Reactive invalidation notifications contain tenant, table, document and operation metadata. New journal and outbox records omit row images. This protects future writes and notifications, while previously stored rows and backups follow your existing data handling policy. When the API detects that an active SSE stream would go back to an older sequence, it closes the stream so the SDK can reconnect and accept a fresh snapshot. Restart the API when switching to a restored instance.
+
+For a deployment that only uses the outbox for reactive invalidation, use a maintenance account to remove old published rows in bounded batches. The durable change log serves SSE catch-up independently. The following example keeps at least 30 days of published rows and requires a PostgreSQL maintenance role that can see the target rows through RLS. Schedule repeated batches until the backlog meets your retention policy.
+
+```sql
+WITH expired AS (
+  SELECT id FROM public.event_outbox
+  WHERE published_at < now() - interval '30 days'
+  ORDER BY id LIMIT 1000
+  FOR UPDATE SKIP LOCKED
+)
+DELETE FROM public.event_outbox AS outbox
+USING expired WHERE outbox.id = expired.id;
+```
+
+On a MySQL deployment, use the same policy with:
+
+```sql
+DELETE FROM rc_outbox
+WHERE published_at < UTC_TIMESTAMP(6) - INTERVAL 30 DAY
+ORDER BY id LIMIT 1000;
+```
+
+Keep unpublished outbox rows.
+
+### Upgrade to tenant commit clocks
+
+Stop every API and worker for the project and run the current version's provisioning command before restarting them. The migration seeds each existing tenant clock from the previous global sequence. Existing receipts keep their original sequence and the new sequence is ordered within each tenant. New tenants allocate their own sequence on their first write. Upgrade the API and worker together. To roll back the database schema and runtime together, use a pre-upgrade backup.
+
+For MySQL, grant the API account `SELECT, INSERT, UPDATE` on `rc_tenant_clocks` after provisioning. Keep the global clock table as migration history. The managed MySQL restore environment needs a snapshot made with the same schema revision as the verifier.
+
+### Schedule journal and receipt retention
+
+Run `node scripts/retain-data.mjs` from the repository root in a scheduled maintenance job. Pass the database URL via `RC_RETENTION_DATABASE_URL`, the tenant UUID via `RC_RETENTION_TENANT`, and at least one policy from the example below. Store the database URL in the job's secret store. Remote connections use verified TLS. PostgreSQL maintenance requires a database role authorized to manage the selected tenant's journal and receipts through RLS. Use a separate credential from the API and worker.
+
+```sh
+RC_RETENTION_KEEP_COMMITS=10000 RC_RETENTION_RECEIPT_DAYS=90 node scripts/retain-data.mjs
+```
+
+Each run removes up to 100 whole journal commits and compacts up to 1,000 receipt responses for the configured tenant. The job advances the journal's purge watermark in the same transaction as deletion. A subscriber that falls behind the watermark gets a fresh snapshot. Choose the receipt response window to cover the application's expected offline periods. A retry after compaction returns HTTP 410 with the key still reserved, so it cannot apply the mutation again. On 410, refresh server state and ask the user to reconcile the pending operation. The minimal receipt remains indefinitely to protect idempotency.
+
+The job is opt-in. Schedule it for each tenant that needs retention, and monitor the JSON counters to see whether the schedule keeps up with the write rate. Journal and receipt policy are independent. Omit the policy variable for a table you want to retain in full.

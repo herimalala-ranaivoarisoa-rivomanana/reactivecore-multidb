@@ -14,11 +14,11 @@ it('executes the registered handler on the tenant connection and returns its dep
     table: 'stocks',
     tenantId: 'tenant-a',
   } as const;
+  const request = { table: 'stocks', columns: ['id'], limit: 10 };
   const handler = vi.fn(async (ctx: QueryContext, args: unknown) => {
     expect(ctx.client).toBe(client);
-    expect(ctx.data).toBe(data);
+    await ctx.data.list(request);
     expect(ctx.principal).toBe(principal);
-    ctx.dependencies.add(dependency);
     return args;
   });
   const registry = { get: vi.fn().mockReturnValue(handler) };
@@ -46,6 +46,7 @@ it('executes the registered handler on the tenant connection and returns its dep
     snapshotSeq: '42',
     dependencies: [dependency],
   });
+  expect(data.list).toHaveBeenCalledExactlyOnceWith(request);
   expect(registry.get).toHaveBeenCalledWith('stocks.list');
   expect(snapshots.snapshotTenantTransaction).toHaveBeenCalledWith(
     'tenant-a',

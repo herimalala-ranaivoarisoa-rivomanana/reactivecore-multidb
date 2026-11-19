@@ -1,3 +1,5 @@
+import { trackWrites } from '../database/tracked-tenant-data.js';
+import { minimizeJournalChange } from './minimize-journal-change.js';
 import {
   BadRequestException,
   ConflictException,
@@ -120,23 +122,41 @@ export class MutationEngineService {
         };
       }
 
-      const changes: JournalChange[] = [];
+      const explicit: JournalChange[] = [];
+      const inferred: JournalChange[] = [];
+      const dataAccess = trackWrites(transaction.data, (change) =>
+        inferred.push({ ...change, eventId: randomUUID() }),
+      );
       const data = await handler.execute(
         {
           principal,
           get client() {
             return transaction.client;
           },
-          data: transaction.data,
+          data: dataAccess,
           ...(transaction.mysqlSql ? { mysqlSql: transaction.mysqlSql } : {}),
           recordChange: (change) =>
-            changes.push({ ...structuredClone(change), eventId: randomUUID() }),
+            explicit.push({
+              ...minimizeJournalChange(change),
+              eventId: randomUUID(),
+            }),
         },
         structuredClone(validated),
       );
       const response = JSON.stringify(data);
       if (response === undefined)
         throw new Error('A mutation must return a JSON result');
+      const identity = (change: JournalChange) =>
+        JSON.stringify([
+          change.table,
+          change.documentId.toLowerCase(),
+          change.operation,
+        ]);
+      const explicitKeys = new Set(explicit.map(identity));
+      const changes = [
+        ...explicit,
+        ...inferred.filter((change) => !explicitKeys.has(identity(change))),
+      ];
       const commitSeq = await transaction.complete(response, changes);
       return { data: JSON.parse(response), commitSeq, replayed: false };
     });

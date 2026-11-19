@@ -1,3 +1,4 @@
+import { trackReads } from '../../database/tracked-tenant-data.js';
 import { Injectable } from '@nestjs/common';
 
 import { QuerySnapshotStore } from '../contracts/query-snapshot-store.js';
@@ -41,7 +42,9 @@ export class QueryExecutorService {
             get client() {
               return access.client;
             },
-            data: access.data,
+            data: trackReads(access.data, principal.tenantId, (dependency) =>
+              collector.add(dependency),
+            ),
             ...(access.mysqlSql ? { mysqlSql: access.mysqlSql } : {}),
             dependencies: collector,
           },

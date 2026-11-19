@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ReactiveCoreClient } from '../dist/client.js';
 import { OfflineQueue } from '../dist/offline.js';
 
 function setup(scope = 'project:env:tenant:user') {
@@ -52,4 +53,26 @@ test('an uncertain send reuses the key and can finish in conflict', async () => 
     return { state: 'conflict', message: 'Stock insuffisant' };
   }, () => true, () => {});
   assert.equal((await queue.list())[0].state, 'conflict');
+});
+
+
+test('a new SSE connection accepts a restored sequence and resumes increasing order', async (t) => {
+  const responses = [['12'], ['4', '3', '5']];
+  t.mock.method(globalThis, 'fetch', async () => new Response(
+    responses.shift().map((seq) =>
+      `event: snapshot\ndata: ${JSON.stringify({ seq, data: seq })}\n\n`,
+    ).join(''),
+    { headers: { 'content-type': 'text/event-stream' } },
+  ));
+  const controller = new AbortController();
+  const client = new ReactiveCoreClient('http://localhost', () => 'test');
+  const stream = client.subscribe('items.list', {}, controller.signal);
+  try {
+    assert.equal((await stream.next()).value.seq, '12');
+    assert.equal((await stream.next()).value.seq, '4');
+    assert.equal((await stream.next()).value.seq, '5');
+  } finally {
+    controller.abort();
+    await stream.return();
+  }
 });

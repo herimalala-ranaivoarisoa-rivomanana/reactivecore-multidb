@@ -27,6 +27,15 @@ import {
   type ProjectSession,
 } from './project-auth.guard.js';
 
+function streamLimit(name: string, fallback: number): number {
+  const configured = process.env[name];
+  if (configured === undefined) return fallback;
+  const value = Number(configured);
+  if (!/^\d+$/.test(configured) || !Number.isSafeInteger(value) || value < 1)
+    throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+
 class Invocation {
   @IsString()
   @Matches(/^[a-z][a-z0-9_.-]{1,127}$/)
@@ -47,6 +56,11 @@ class Invocation {
 )
 export class PlatformController {
   private readonly streamsByPrincipal = new Map<string, number>();
+  private readonly maxStreams = streamLimit('RC_SSE_MAX_STREAMS', 500);
+  private readonly maxStreamsPerUser = streamLimit(
+    'RC_SSE_MAX_STREAMS_PER_USER',
+    8,
+  );
   private activeStreams = 0;
 
   constructor(
@@ -125,7 +139,10 @@ export class PlatformController {
       session.principal.userId,
     ]);
     const count = this.streamsByPrincipal.get(key) ?? 0;
-    if (this.activeStreams >= 500 || count >= 8) {
+    if (
+      this.activeStreams >= this.maxStreams ||
+      count >= this.maxStreamsPerUser
+    ) {
       throw new HttpException('Too many subscriptions', 429);
     }
     if (response.destroyed) return;

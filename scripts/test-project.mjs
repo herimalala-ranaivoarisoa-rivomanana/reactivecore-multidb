@@ -488,6 +488,7 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       'mutation_execution_receipts',
       'reactive_change_log',
       'reactive_commit_clock',
+      'reactive_tenant_clocks',
       'tenants',
     ]);
     for (;;) {
@@ -623,6 +624,40 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       tokens: [await tokenFor(tenant), await tokenFor(tenant)],
       signal: AbortSignal.timeout(90000),
     });
+  }
+  if (process.env.RC_RETENTION_TEST === '1') {
+    const { checkRetention } =
+      await import('./test-fixtures/check-retention.mjs');
+    const [retained, neighbor] = [randomUUID(), randomUUID()];
+    await cli('tenant', directory, retained);
+    await cli('tenant', directory, neighbor);
+    const databaseUrl = pgUrl('reactivecore', adminPassword, databaseName);
+    const db = new pg.Client({ connectionString: databaseUrl });
+    await db.connect();
+    try {
+      await checkRetention({
+        tenant: retained,
+        client: await clientFor(retained),
+        neighbor: await clientFor(neighbor),
+        databaseUrl,
+        ageReceipt: (key) =>
+          db.query(
+            "UPDATE mutation_execution_receipts SET created_at = now() - interval '31 days' WHERE tenant_id = $1 AND idempotency_key = $2",
+            [retained, key],
+          ),
+        readState: async () =>
+          (
+            await db.query(
+              `SELECT pruned_through::text AS "prunedThrough",
+            (SELECT count(*)::int FROM reactive_change_log WHERE tenant_id = $1) AS remaining
+           FROM reactive_tenant_clocks WHERE tenant_id = $1`,
+              [retained],
+            )
+          ).rows[0],
+      });
+    } finally {
+      await db.end();
+    }
   }
   if (outageLinks) {
     const { checkDatabaseOutage } =

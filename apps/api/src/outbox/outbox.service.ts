@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { RedisService } from '../redis/redis.service.js';
+import { invalidationPayload } from './invalidation-payload.js';
 import { invalidationChannel } from './invalidation-channel.js';
 import { OutboxStore } from './outbox-store.js';
 
@@ -17,7 +18,10 @@ export class OutboxService {
     try {
       await this.redis.publish(
         invalidationChannel(),
-        JSON.stringify(lease.event),
+        JSON.stringify({
+          ...lease.event,
+          payload: invalidationPayload(lease.event.type, lease.event.payload),
+        }),
       );
     } catch (error) {
       await this.store.retry(lease);

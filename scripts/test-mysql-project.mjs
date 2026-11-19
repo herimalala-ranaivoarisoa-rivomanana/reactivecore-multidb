@@ -260,7 +260,12 @@ async function grantRuntime(current) {
     ['rc_outbox', 'INSERT'],
     ['items', 'SELECT, INSERT'],
   ];
-  if (current) appGrants.push(['charges', 'SELECT, INSERT']);
+  if (current) {
+    appGrants.push(
+      ['rc_tenant_clocks', 'SELECT, INSERT, UPDATE'],
+      ['charges', 'SELECT, INSERT'],
+    );
+  }
   for (const [table, grants] of appGrants) {
     await admin.query(
       `GRANT ${grants} ON \`${database}\`.\`${table}\` TO 'reactivecore_app'@'%'`,
@@ -322,7 +327,8 @@ async function checkRestore() {
       ['items', 'id'],
       ['charges', 'id'],
       ['rc_receipts', 'idempotency_key'],
-      ['rc_changes', 'seq, ordinal'],
+      ['rc_changes', 'tenant_id, seq, ordinal'],
+      ['rc_tenant_clocks', 'tenant_id'],
       ['rc_migrations', 'name'],
     ]) {
       const [original] = await admin.query(
@@ -485,7 +491,8 @@ try {
   const stream = client.subscribe('items.list', {}, signal);
   let item;
   try {
-    assert.deepEqual((await stream.next()).value.data, []);
+    const initial = (await stream.next()).value;
+    assert.deepEqual(initial.data, []);
     const key = randomUUID();
     const args = { title: 'Same application, MySQL' };
     await admin.query(
@@ -497,7 +504,7 @@ try {
       });
       assert.deepEqual(await client.query('items.list', {}, signal), {
         data: [],
-        seq: baseline?.result.commitSeq ?? '0',
+        seq: initial.seq,
       });
     } finally {
       await admin.query(
@@ -607,6 +614,34 @@ try {
     });
   }
   if (mysqlContainer) await checkRestore();
+  if (process.env.RC_RETENTION_TEST === '1') {
+    const { checkRetention } =
+      await import('./test-fixtures/check-retention.mjs');
+    const [retained, neighbor] = [randomUUID(), randomUUID()];
+    await cli('tenant', directory, retained);
+    await cli('tenant', directory, neighbor);
+    await checkRetention({
+      tenant: retained,
+      client: await clientFor(retained),
+      neighbor: await clientFor(neighbor),
+      databaseUrl: adminUrl,
+      ageReceipt: (key) =>
+        admin.execute(
+          `UPDATE \`${database}\`.rc_receipts SET created_at = CURRENT_TIMESTAMP(6) - INTERVAL 31 DAY
+         WHERE tenant_id = ? AND idempotency_key = ?`,
+          [retained, key],
+        ),
+      readState: async () =>
+        (
+          await admin.execute(
+            `SELECT CAST(pruned_through AS CHAR) AS prunedThrough,
+          (SELECT CAST(count(*) AS UNSIGNED) FROM \`${database}\`.rc_changes WHERE tenant_id = ?) AS remaining
+         FROM \`${database}\`.rc_tenant_clocks WHERE tenant_id = ?`,
+            [retained, retained],
+          )
+        )[0][0],
+    });
+  }
   if (outageLinks) {
     const { checkDatabaseOutage } =
       await import('./test-fixtures/check-database-outage.mjs');

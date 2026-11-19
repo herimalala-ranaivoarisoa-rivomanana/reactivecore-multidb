@@ -70,13 +70,14 @@ export class MysqlDatabase implements OnModuleDestroy {
   }
 
   async currentSeq(
+    tenantId?: string,
     connection: PoolConnection | typeof this.pool = this.pool,
   ): Promise<string> {
     const [rows] = await connection.query<RowDataPacket[]>(
-      'SELECT last_seq AS seq FROM rc_commit_clock WHERE id = 1',
+      'SELECT last_seq AS seq FROM rc_tenant_clocks WHERE tenant_id = ?',
+      [tenantId ?? null],
     );
-    if (!rows[0]) throw new Error('Commit clock unavailable');
-    return String(rows[0].seq);
+    return String(rows[0]?.seq ?? 0);
   }
 
   async ping(): Promise<boolean> {

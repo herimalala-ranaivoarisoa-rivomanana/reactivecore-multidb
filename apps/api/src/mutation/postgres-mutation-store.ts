@@ -1,3 +1,4 @@
+import { GoneException } from '@nestjs/common';
 import { Injectable } from '@nestjs/common';
 import { postgresTenantData } from '../database/postgres-tenant-data.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -65,14 +66,19 @@ export class PostgresMutationStore extends MutationStore {
               } = await client.query<{
                 request_hash: string;
                 response: unknown;
+                response_expired: boolean;
                 commit_seq: string | null;
               }>(
-                `SELECT request_hash, response, commit_seq::text FROM mutation_execution_receipts
+                `SELECT request_hash, response, response_expired, commit_seq::text FROM mutation_execution_receipts
              WHERE tenant_id = $1 AND principal_id = $2 AND mutation_name = $3 AND idempotency_key = $4`,
                 key,
               );
               if (!receipt?.commit_seq)
                 throw new Error('Incomplete mutation receipt');
+              if (receipt.response_expired)
+                throw new GoneException(
+                  'Mutation response retention has expired',
+                );
               return {
                 requestHash: receipt.request_hash,
                 response: receipt.response,

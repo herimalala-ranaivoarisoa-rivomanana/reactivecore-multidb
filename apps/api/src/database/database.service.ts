@@ -109,19 +109,24 @@ export class DatabaseService implements OnModuleDestroy, QuerySnapshotStore {
     return this.readOnlyTenantTransaction(tenantId, async (client) =>
       callback(
         { client, data: postgresTenantData(client, tenantId) },
-        await this.currentCommitSeq(client),
+        await this.currentCommitSeq(tenantId, client),
       ),
     );
   }
 
   async currentCommitSeq(
-    client: PoolClient | Pool = this.pool,
+    tenantId?: string,
+    client?: PoolClient,
   ): Promise<string> {
-    const { rows } = await client.query<{ seq: string }>(
-      'SELECT last_seq::text AS seq FROM public.reactive_commit_clock WHERE id = 1',
+    if (tenantId && !client)
+      return this.readOnlyTenantTransaction(tenantId, (connection) =>
+        this.currentCommitSeq(tenantId, connection),
+      );
+    const { rows } = await (client ?? this.pool).query<{ seq: string }>(
+      'SELECT last_seq::text AS seq FROM public.reactive_tenant_clocks WHERE tenant_id = $1::uuid',
+      [tenantId ?? null],
     );
-    if (!rows[0]) throw new Error('Commit clock unavailable');
-    return rows[0].seq;
+    return rows[0]?.seq ?? '0';
   }
 
   private async withTenant<T>(

@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import type { TenantWriter } from '../database/tenant-data.js';
 import type { QueryPrincipal } from '../reactive/contracts/query-context.js';
 import type { JournalChange } from '../reactive/changelog/change-log.service.js';
 
@@ -21,7 +22,9 @@ export interface MutationResult {
 
 /** Tenant-scoped transaction passed to a mutation handler. */
 export interface MutationContext {
+  /** PostgreSQL SQL access for existing handlers. */
   client: PoolClient;
+  data: TenantWriter;
   principal: MutationPrincipal;
   /** Records a change to persist in the journal and outbox in the same commit. */
   recordChange(change: Omit<JournalChange, 'eventId'>): void;

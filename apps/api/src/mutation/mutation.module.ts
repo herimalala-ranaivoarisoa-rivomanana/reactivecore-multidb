@@ -8,14 +8,26 @@ import { MutationRegistryService } from './mutation-registry.service.js';
 import { MutationStore } from './mutation-store.js';
 import { PostgresMutationStore } from './postgres-mutation-store.js';
 
+import { databaseEngine } from '../database/database-engine.js';
+import { MysqlModule } from '../database/mysql/mysql.module.js';
+import { MysqlMutationStore } from '../database/mysql/mysql-mutation-store.js';
+
+const mysql = databaseEngine() === 'mysql';
+
 @Module({
-  imports: [DiscoveryModule, DatabaseModule, ChangeLogModule],
+  imports: [
+    DiscoveryModule,
+    ...(mysql ? [MysqlModule] : [DatabaseModule, ChangeLogModule]),
+  ],
   providers: [
     MutationRegistryService,
-    MutationCommitService,
+    ...(mysql ? [] : [MutationCommitService]),
     MutationEngineService,
-    { provide: MutationStore, useClass: PostgresMutationStore },
+    {
+      provide: MutationStore,
+      useClass: mysql ? MysqlMutationStore : PostgresMutationStore,
+    },
   ],
-  exports: [MutationCommitService, MutationEngineService],
+  exports: [MutationEngineService],
 })
 export class MutationModule {}

@@ -10,6 +10,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: local_mysql_test
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - '3306/tcp'
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 --silent" --health-interval 5s --health-timeout 4s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,3 +33,7 @@ jobs:
       - run: node --env-file=.env.reactivecore-test scripts/test-project.mjs
       - name: Verify managed PostgreSQL provisioning
         run: RC_TEST_MANAGED_DATABASE=1 node --env-file=.env.reactivecore-test scripts/test-project.mjs
+      - name: Verify MySQL project
+        env:
+          RC_MYSQL_TEST_URL: mysql://root:local_mysql_test@127.0.0.1:${{ job.services.mysql.ports[3306] }}
+        run: node --env-file=.env.reactivecore-test scripts/test-mysql-project.mjs

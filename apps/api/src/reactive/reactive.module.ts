@@ -2,6 +2,7 @@ import { ChangeLogModule } from './changelog/change-log.module.js';
 import { Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 
+import { databaseEngine } from '../database/database-engine.js';
 import { DatabaseModule } from '../database/database.module.js';
 
 import { QueryRegistryService } from './registry/query-registry.service.js';
@@ -14,7 +15,11 @@ import { ReactiveStreamService } from './reactive-stream.service.js';
 import { RedisInvalidationService } from './invalidation/redis-invalidation.service.js';
 
 @Module({
-  imports: [DatabaseModule, DiscoveryModule, ChangeLogModule],
+  imports: [
+    DiscoveryModule,
+    ChangeLogModule,
+    ...(databaseEngine() === 'mysql' ? [] : [DatabaseModule]),
+  ],
   providers: [
     QueryRegistryService,
     DependencyTrackerService,

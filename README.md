@@ -1,8 +1,8 @@
 # ReactiveCore MultiDB
 
-**A self-hosted reactive backend with offline mutation support and a roadmap for multiple database engines.**
+**A self-hosted reactive backend with offline mutations, PostgreSQL support, and a MySQL preview.**
 
-This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL is the supported storage engine today. The CLI supports pre-created PostgreSQL databases. The next milestones are validating specific managed offerings and adding a storage adapter with shared tests for transactions, tenant isolation, idempotency, and live updates.
+This repository continues development from [ReactiveCore v0.1.0](https://github.com/herimalala-ranaivoarisoa-rivomanana/reactivecore/releases/tag/v0.1.0). PostgreSQL 16 is the established storage engine. MySQL 8.4 is available as a preview for applications using the structured tenant data interface. Both run the same item example and HTTP/SSE client.
 
 You supply the schema, queries, mutations, and access policies. ReactiveCore isolates data by tenant and delivers query updates over HTTP/SSE. The TypeScript SDK reconnects subscriptions and provides a persistent offline mutation queue.
 
@@ -10,13 +10,13 @@ This guide creates a ReactiveCore backend and a separate Vue or Next.js frontend
 
 **Release status.** Run ReactiveCore MultiDB from source. The upstream alpha is available from the original ReactiveCore repository.
 
-[Local setup](#1-install-the-prerequisites) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
+[Local setup](#1-install-the-prerequisites) · [MySQL preview](#run-the-same-project-on-mysql-84) · [Vue and Next.js](#8-create-and-run-a-frontend) · [Offline writes](#add-offline-writes-to-a-frontend) · [Deployment](#9-configure-a-production-deployment) · [Tests](#verify-the-engine)
 
 ### Storage adapter progress
 
 The mutation engine uses an internal [mutation storage contract](apps/api/src/mutation/mutation-store.ts). Its [PostgreSQL implementation](apps/api/src/mutation/postgres-mutation-store.ts) reserves the idempotency key and commits the handler's business write, receipt, change log, and outbox in one transaction. Retries are limited to errors the adapter identifies as rolled back. The PostgreSQL integration suite checks that replays return the same result and that subscribers and the outbox worker see the committed change.
 
-The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). PostgreSQL implements both and remains the supported engine. Application handlers still receive a PostgreSQL query client. A second engine would need an application data interface, equivalent snapshot and change-feed implementations, durable outbox delivery, and tenant isolation.
+The query engine runs tenant reads through a [snapshot contract](apps/api/src/reactive/contracts/query-snapshot-store.ts), and subscriptions catch up through a [durable change-feed contract](apps/api/src/reactive/contracts/change-feed.ts). The worker claims, retries, and acknowledges deliveries through an [outbox storage contract](apps/api/src/outbox/outbox-store.ts). Both adapters implement these contracts. The item example uses the [tenant data interface](apps/api/src/database/tenant-data.ts) for reads, inserts, updates, and deletes. The MySQL preview covers this interface and its InnoDB migrations.
 
 ## 1. Install the prerequisites
 
@@ -34,7 +34,7 @@ npm run build
 ```sh
 npm run project -- init ../my-project
 cp scripts/test-fixtures/project/application.mjs ../my-project/application.mjs
-cp scripts/test-fixtures/project/migrations/001_items.sql ../my-project/migrations/
+cp scripts/test-fixtures/project/migrations/*.sql ../my-project/migrations/
 node --input-type=module <<'JS'
 import { readFileSync, writeFileSync } from 'node:fs';
 
@@ -52,12 +52,43 @@ This command creates the backend project. Step 8 creates the frontend separately
 
 | File | What to change for your application |
 | --- | --- |
-| `project.json` | Describe each public function's argument and result types. Code generation supports scalars, objects, and homogeneous arrays. |
+| `project.json` | Describe each public function's argument and result types. Code generation supports scalars, objects, homogeneous arrays, and nullable results written as `[shape, "null"]`. |
 | `application.mjs` | Export a factory that registers NestJS providers with `ReactiveQuery` and `ReactiveMutation` and declares which functions can be called over HTTP. |
 | `migrations/*.sql` | Define your tables, indexes, row-level security policies, and runtime grants. Add a numbered migration for each later schema change. |
 | `client.ts` | Import the generated `createClient` in a TypeScript app. Rerun `codegen` after changing the manifest. |
 
 Read the [example application](scripts/test-fixtures/project/application.mjs) and its [migration](scripts/test-fixtures/project/migrations/001_items.sql). The `items.list` query filters by the authenticated tenant and registers a table dependency. The `items.create` mutation validates the title, inserts a row, and calls `ctx.recordChange` in the same transaction. The change journal lets the engine refresh subscriptions that depend on the affected table. The database policy also enforces the tenant boundary.
+
+### Access tenant data from application functions
+
+Use `ctx.data.get({ table, id, columns })` to read one row by ID. It returns `null` if the row is missing or belongs to another tenant. The `items.get` handler registers a dependency on that exact item, so editing or deleting it refreshes the detail subscription. A deletion delivers a snapshot with `data: null`.
+
+```ts
+const first = await client.query('items.get', { id });
+console.log(first.data?.title);
+
+for await (const snapshot of client.subscribe('items.get', { id }, signal)) {
+  console.log(snapshot.data?.title ?? 'Item unavailable');
+}
+```
+
+Here `client` is the generated client, `id` is the ID returned by `items.create`, and `signal` is the abort signal for the detail view. Regenerate `client.ts` after updating the project manifest.
+
+The item example uses `ctx.data.list({ table, columns, orderBy, limit })` in queries and the following methods in mutations. Each method operates inside the current tenant's transaction.
+
+| Method | Behavior |
+| --- | --- |
+| `ctx.data.insert(table, values)` | Inserts application values and supplies `tenant_id`. |
+| `ctx.data.update(table, id, values)` | Updates the tenant's row by ID. Returns `false` if the row is absent. |
+| `ctx.data.delete(table, id)` | Deletes the tenant's row by ID. Returns `false` if the row is absent. |
+
+Use a `tenant_id` column and a stable `id` that uniquely identifies a row within that tenant. Define the constraint, policies, and restricted grants in your migrations. Updates cannot change `id` or `tenant_id`. The item handlers return HTTP 404 when the requested row is outside the caller's tenant or is missing.
+
+For an existing copy of the PostgreSQL item example, add [the write grants migration](scripts/test-fixtures/project/migrations/002_item_writes.sql) and run provisioning again before using the new mutations. On MySQL, apply the grants in the [MySQL walkthrough](#run-the-same-project-on-mysql-84). Update the application factory and manifest, regenerate the client, and restart the API.
+
+The read interface automatically filters by the authenticated tenant. The write interface supplies `tenant_id` and rejects values that try to set it. The example still registers its query dependency with `ctx.dependencies.add` and records the mutation with `ctx.recordChange`. Those calls tell the reactive engine what to refresh after a commit.
+
+Use the structured interface for the operations it supports. Existing PostgreSQL handlers can continue to execute SQL through `ctx.client`. Application code that uses PostgreSQL-specific SQL needs an equivalent implementation before it can run on another engine.
 
 ## 3. Start PostgreSQL and Redis
 
@@ -522,6 +553,85 @@ Each application decides how to present pending operations. A task can appear im
 The starter's test should state which cache behaviors it covers. Reloading the entry screen, viewing previously fetched data, and opening a page that has never been visited are separate scenarios.
 
 The first automated test should open the app online, go offline, create two operations, reload, and cancel one before reconnecting. After reconnecting, it should verify on the server that the retained operation committed exactly once and the cancelled operation created no row. The browser should receive the confirmed result through SSE.
+
+## Run the same project on MySQL 8.4
+
+Follow README steps 1–3 to build the workspace, create `../my-project` with the item functions, and start Redis. PostgreSQL may remain idle during this walkthrough. Replace the PostgreSQL provisioning and runtime commands in steps 4–5 with the commands below. The API and worker must use the same engine and the same project database.
+
+### Prepare the schema and accounts
+
+Run an isolated MySQL container on loopback. The example credentials are for local testing.
+
+```sh
+docker run -d --name reactivecore-guide-mysql \
+  -p 127.0.0.1:53306:3306 \
+  -e MYSQL_ROOT_PASSWORD=local_mysql_admin -e MYSQL_ROOT_HOST=% mysql:8.4
+until docker exec reactivecore-guide-mysql mysqladmin ping -h 127.0.0.1 --silent; do sleep 2; done
+
+docker exec -i reactivecore-guide-mysql mysql -uroot -plocal_mysql_admin <<'SQL'
+CREATE DATABASE reactivecore_my_project CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+CREATE USER 'reactivecore_app'@'%' IDENTIFIED BY 'local_app_password';
+CREATE USER 'reactivecore_worker'@'%' IDENTIFIED BY 'local_worker_password';
+SQL
+```
+
+Keep MySQL project migrations in `migrations/mysql/` and declare the application tables permitted through `ctx.data`. All registered tables must use InnoDB and include `tenant_id`. The same `application.mjs` and generated frontend client work on both engines.
+
+```sh
+mkdir -p ../my-project/migrations/mysql
+cp scripts/test-fixtures/project/migrations/mysql/001_items.sql ../my-project/migrations/mysql/
+node --input-type=module <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+const file = '../my-project/project.json';
+const project = JSON.parse(readFileSync(file, 'utf8'));
+project.mysql = { tables: ['items'] };
+writeFileSync(file, JSON.stringify(project, null, 2) + '\n');
+JS
+
+export RC_PROVISION_ADMIN_URL=mysql://root:local_mysql_admin@127.0.0.1:53306/reactivecore_my_project
+npm run project -- provision ../my-project
+TENANT_ID=$(node -p 'crypto.randomUUID()')
+USER_ID=$(node -p 'crypto.randomUUID()')
+npm run project -- tenant ../my-project "$TENANT_ID"
+(umask 077 && printf 'TENANT_ID=%s\nUSER_ID=%s\n' "$TENANT_ID" "$USER_ID" > ../my-project/.env.identity)
+unset RC_PROVISION_ADMIN_URL
+```
+
+Grant the runtime roles only the operations used by the engine and the example:
+
+```sh
+docker exec -i reactivecore-guide-mysql mysql -uroot -plocal_mysql_admin <<'SQL'
+GRANT SELECT, UPDATE ON reactivecore_my_project.rc_commit_clock TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT, UPDATE ON reactivecore_my_project.rc_receipts TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT ON reactivecore_my_project.rc_changes TO 'reactivecore_app'@'%';
+GRANT INSERT ON reactivecore_my_project.rc_outbox TO 'reactivecore_app'@'%';
+GRANT SELECT, INSERT, UPDATE (title), DELETE ON reactivecore_my_project.items TO 'reactivecore_app'@'%';
+GRANT SELECT, UPDATE (lease_token, available_at, attempts, published_at)
+    ON reactivecore_my_project.rc_outbox TO 'reactivecore_worker'@'%';
+SQL
+```
+
+### Start the runtime and verify both engines
+
+Use the API and worker commands from step 5 in separate terminals. In each terminal, replace the `DATABASE_URL` line with the corresponding MySQL connection string.
+
+| Process | Local MySQL `DATABASE_URL` |
+| --- | --- |
+| API | `mysql://reactivecore_app:local_app_password@127.0.0.1:53306/reactivecore_my_project` |
+| Worker | `mysql://reactivecore_worker:local_worker_password@127.0.0.1:53306/reactivecore_my_project` |
+
+Repeat steps 6–8. The first query returns an empty list, the mutation creates one item even when replayed with the same key, and Vue or Next.js receives the update without a page reload. Health reports the active engine under `services.mysql`. Stop the runtime processes, then run `docker stop reactivecore-guide-mysql` to stop the local database.
+
+**Preview scope.** MySQL enforces tenant scoping for the supported `ctx.data` operations. The MySQL handler context rejects raw `ctx.client` access. Database logins are shared infrastructure credentials and must remain private to the backend. PostgreSQL projects can continue using native SQL and database-level row security. MySQL DDL commits implicitly. Apply trusted, restartable migrations and check the database state after a failed migration before retrying. For a remote MySQL server, use the certificate's DNS hostname, append `?ssl=verify-full` to each URL, and configure the CA with `NODE_EXTRA_CA_CERTS` if required. Remote MySQL offerings have yet to be validated.
+
+The generated client also exposes `items.update` and `items.delete`. Use the ID returned by `items.create` and a fresh idempotency key for each action.
+
+```ts
+await client.mutate('items.update', { id, title: 'Renamed item' }, crypto.randomUUID());
+await client.mutate('items.delete', { id }, crypto.randomUUID());
+```
+
+The MySQL CI test uses a disposable database and the same application fixture as PostgreSQL. It checks repeatable provisioning, isolation between tenants, rollback when the outbox write fails, concurrent idempotent replay, SSE delivery and reconnection, tenant-scoped updates and deletes, detail subscriptions, and worker acknowledgement.
 
 ## 9. Configure a production deployment
 

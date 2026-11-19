@@ -8,6 +8,7 @@ import { QueryExecutorService } from './query-executor.service.js';
 it('executes the registered handler on the tenant connection and returns its dependencies', async () => {
   const principal = { userId: 'user-a', tenantId: 'tenant-a', roles: [] };
   const client = {} as PoolClient;
+  const data = { get: vi.fn(), list: vi.fn() };
   const dependency = {
     kind: 'table',
     table: 'stocks',
@@ -15,6 +16,7 @@ it('executes the registered handler on the tenant connection and returns its dep
   } as const;
   const handler = vi.fn(async (ctx: QueryContext, args: unknown) => {
     expect(ctx.client).toBe(client);
+    expect(ctx.data).toBe(data);
     expect(ctx.principal).toBe(principal);
     ctx.dependencies.add(dependency);
     return args;
@@ -24,8 +26,11 @@ it('executes the registered handler on the tenant connection and returns its dep
     snapshotTenantTransaction: vi.fn(
       async (
         _tenant: string,
-        run: (client: PoolClient, seq: string) => Promise<unknown>,
-      ) => run(client, '42'),
+        run: (
+          access: Pick<QueryContext, 'client' | 'data'>,
+          seq: string,
+        ) => Promise<unknown>,
+      ) => run({ client, data }, '42'),
     ),
   };
   const executor = new QueryExecutorService(

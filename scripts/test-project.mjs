@@ -16,6 +16,7 @@ import { setTimeout } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { SignJWT } from 'jose';
 import pg from 'pg';
+import { checkItemWrites } from './test-fixtures/check-item-writes.mjs';
 
 const exec = promisify(execFile);
 const name = `items-${randomUUID().slice(0, 8)}`;
@@ -44,6 +45,7 @@ const pgUrl = (user, password, target) =>
 const databaseName = `reactivecore_${database}`;
 const issuer = 'urn:reactivecore:cli-test';
 const tenant = randomUUID();
+const otherTenant = randomUUID();
 const env = {
   ...process.env,
   RC_PROVISION_APP_PASSWORD: appPassword,
@@ -212,6 +214,10 @@ try {
     join(fixture, 'migrations/001_items.sql'),
     join(directory, 'migrations/001_items.sql'),
   );
+  await cp(
+    join(fixture, 'migrations/002_item_writes.sql'),
+    join(directory, 'migrations/002_item_writes.sql'),
+  );
   if (image) {
     await chmod(directory, 0o755);
     await chmod(join(directory, 'migrations'), 0o755);
@@ -219,6 +225,7 @@ try {
       'project.json',
       'application.mjs',
       'migrations/001_items.sql',
+      'migrations/002_item_writes.sql',
     ]) {
       await chmod(join(directory, file), 0o644);
     }
@@ -230,6 +237,10 @@ try {
     `import { createClient } from './client.js';
 const client = createClient('http://localhost', () => 'token');
 void client.query('items.list', {});
+void client.query('items.get', { id: 'item' }).then(({ data }) => {
+  // @ts-expect-error Detail results can be null
+  return data.title;
+});
 // @ts-expect-error Invalid generated argument type
 void client.mutate('items.create', { title: 42 }, 'id');
 `,
@@ -306,7 +317,7 @@ void client.mutate('items.create', { title: 42 }, 'id');
     /Applied migrations were changed/,
   );
   await writeFile(migration, original);
-  const failing = join(directory, 'migrations/002_probe.sql');
+  const failing = join(directory, 'migrations/003_probe.sql');
   await writeFile(
     failing,
     'CREATE TABLE public.migration_probe (id int); SELECT missing_column;',
@@ -314,14 +325,15 @@ void client.mutate('items.create', { title: 42 }, 'id');
   if (image) await chmod(failing, 0o644);
   await assert.rejects(
     cli('provision', directory),
-    /Migration failed: project\/002_probe.sql/,
+    /Migration failed: project\/003_probe.sql/,
   );
   await writeFile(failing, 'CREATE TABLE public.migration_probe (id int);');
   assert.match(
     (await cli('provision', directory)).stdout,
-    /Applied project\/002_probe.sql/,
+    /Applied project\/003_probe.sql/,
   );
   await cli('tenant', directory, tenant);
+  await cli('tenant', directory, otherTenant);
 
   await appendFile(
     join(directory, 'application.mjs'),
@@ -343,18 +355,21 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
     }
     await setTimeout(100, undefined, { signal });
   }
-  const token = await new SignJWT({
-    tenant_id: tenant,
-    scope: 'query mutation subscribe',
-  })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setSubject(randomUUID())
-    .setIssuer(issuer)
-    .setAudience(env.RC_JWT_AUDIENCE)
-    .setIssuedAt()
-    .setExpirationTime('5m')
-    .sign(new TextEncoder().encode(tokenKey));
-  const client = new ReactiveCoreClient(origin, () => token);
+  async function clientFor(tenantId) {
+    const token = await new SignJWT({
+      tenant_id: tenantId,
+      scope: 'query mutation subscribe',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(randomUUID())
+      .setIssuer(issuer)
+      .setAudience(env.RC_JWT_AUDIENCE)
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(new TextEncoder().encode(tokenKey));
+    return new ReactiveCoreClient(origin, () => token);
+  }
+  const client = await clientFor(tenant);
   const stream = client.subscribe('items.list', {}, signal);
   try {
     assert.deepEqual((await stream.next()).value.data, []);
@@ -493,6 +508,7 @@ if (process.env.RC_PROVISION_ADMIN_URL) throw new Error('Provisioning credential
       restoredDatabase,
     ]);
   }
+  await checkItemWrites(client, await clientFor(otherTenant), signal);
   console.log(
     'CLI verified: generated types, repeatable and atomic migrations, live SDK update, worker acknowledgment, and database restore.',
   );

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { postgresTenantData } from '../database/postgres-tenant-data.js';
 import { DatabaseService } from '../database/database.service.js';
 import { MutationCommitService } from './mutation-commit.service.js';
 import {
@@ -42,6 +43,7 @@ export class PostgresMutationStore extends MutationStore {
         );
         return run({
           client,
+          data: postgresTenantData(client, scope.tenantId),
           async reserve(requestHash) {
             const reserved = await client.query(
               `INSERT INTO mutation_execution_receipts

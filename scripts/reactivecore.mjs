@@ -31,6 +31,8 @@ function type(shape) {
   if (['string', 'number', 'boolean', 'null'].includes(shape)) return shape;
   if (Array.isArray(shape) && shape.length === 1)
     return `Array<${type(shape[0])}>`;
+  if (Array.isArray(shape) && shape.length === 2 && shape[1] === 'null')
+    return `${type(shape[0])} | null`;
   if (shape && typeof shape === 'object' && !Array.isArray(shape)) {
     const fields = Object.entries(shape).map(
       ([key, value]) => `${JSON.stringify(key)}: ${type(value)}`,
@@ -292,7 +294,7 @@ async function administer(adminUrl, database, name, create, callback) {
   });
 }
 
-async function start(command, directory, name, database) {
+async function start(command, directory, name, database, manifest) {
   const connection = new URL(env('DATABASE_URL'));
   if (decodeURIComponent(connection.pathname) !== `/${database}`) {
     throw new Error(`DATABASE_URL must point to ${database}`);
@@ -312,6 +314,10 @@ async function start(command, directory, name, database) {
   delete runtimeEnv.RC_PROVISION_EXISTING_DATABASE;
   delete runtimeEnv.RC_PROVISION_APP_PASSWORD;
   delete runtimeEnv.RC_PROVISION_WORKER_PASSWORD;
+  if (connection.protocol === 'mysql:' && command === 'serve') {
+    const { mysqlTables } = await import('./mysql-project.mjs');
+    runtimeEnv.RC_MYSQL_TABLES = mysqlTables(manifest).join(',');
+  }
   if (command === 'serve') {
     runtimeEnv.RC_APPLICATION_FILE = join(directory, 'application.mjs');
     runtimeEnv.RC_JWT_AUDIENCE ??= `reactivecore:${name}`;
@@ -387,11 +393,24 @@ async function main() {
 
   if (command === 'codegen') return codegen(directory, manifest);
   if (command === 'serve' || command === 'worker')
-    return start(command, directory, name, database);
+    return start(command, directory, name, database, manifest);
 
   const admin = env('RC_PROVISION_ADMIN_URL');
+  if (command === 'tenant' && !uuid.test(id))
+    throw new Error('Expected a tenant UUID');
+  if (new URL(admin).protocol === 'mysql:') {
+    const { administerMysql } = await import('./mysql-project.mjs');
+    return administerMysql({
+      root,
+      directory,
+      manifest,
+      database,
+      admin,
+      command,
+      id,
+    });
+  }
   if (command === 'tenant') {
-    if (!uuid.test(id)) throw new Error('Expected a tenant UUID');
     return administer(admin, database, name, false, (client) =>
       client.query(
         'INSERT INTO public.tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING',

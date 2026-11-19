@@ -1,3 +1,5 @@
+import { databaseEngine } from './database/database-engine.js';
+import { MysqlDatabase } from './database/mysql/mysql-database.js';
 import { NestFactory } from '@nestjs/core';
 import { loadApplication } from './platform/load-application.js';
 import { PlatformModule } from './platform/platform.module.js';
@@ -26,6 +28,10 @@ async function run() {
     }),
     { forceCloseConnections: true },
   );
+  if (databaseEngine() === 'mysql') {
+    try { await app.get(MysqlDatabase).assertAccount('reactivecore_app'); }
+    catch (error) { await app.close(); throw error; }
+  }
   const origins = process.env.RC_CORS_ORIGINS?.split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);

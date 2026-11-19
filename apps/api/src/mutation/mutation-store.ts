@@ -17,6 +17,7 @@ export interface MutationReceipt {
 export interface MutationTransaction {
   /** The application handler's current PostgreSQL query interface. */
   readonly client: MutationContext['client'];
+  readonly data: MutationContext['data'];
 
   /** Reserves a new key or returns the previously committed receipt. */
   reserve(requestHash: string): Promise<MutationReceipt | undefined>;

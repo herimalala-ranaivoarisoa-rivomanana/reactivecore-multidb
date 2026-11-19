@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import type { TenantReader } from '../../database/tenant-data.js';
 import type { Dependency } from './dependency.types.js';
 
 /** Identity and claims verified by the configured JWT issuer. */
@@ -18,6 +19,8 @@ export interface DependencyCollector {
 /** Tenant-scoped read-only transaction and dependency collector for a query handler. */
 export interface QueryContext {
   principal: QueryPrincipal;
+  /** PostgreSQL SQL access for existing handlers. */
   client: PoolClient;
+  data: TenantReader;
   dependencies: DependencyCollector;
 }

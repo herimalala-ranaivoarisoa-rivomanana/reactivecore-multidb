@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { setTimeout } from 'node:timers/promises';
-import { DatabaseService } from '../database/database.service.js';
+import { OutboxStore } from './outbox-store.js';
 import { OutboxModule } from './outbox.module.js';
 import { OutboxService } from './outbox.service.js';
 
@@ -16,16 +16,7 @@ async function run() {
   process.once('SIGTERM', stop);
 
   try {
-    const database = app.get(DatabaseService);
-    const { rows } = await database.query<{ safe: boolean }>(
-      `SELECT current_user = 'reactivecore_worker'
-              AND NOT rolsuper AND NOT rolbypassrls AS safe
-       FROM pg_roles WHERE rolname = current_user`,
-    );
-    if (!rows[0]?.safe)
-      throw new Error(
-        'Outbox requires the restricted reactivecore_worker role',
-      );
+    await app.get(OutboxStore).assertWorkerAccess();
 
     const outbox = app.get(OutboxService);
     while (!stopping) {

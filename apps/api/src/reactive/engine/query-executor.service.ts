@@ -34,11 +34,14 @@ export class QueryExecutorService {
 
     return this.snapshots.snapshotTenantTransaction(
       principal.tenantId,
-      async (client, snapshotSeq) => {
+      async (access, snapshotSeq) => {
         const data = await handler(
           {
             principal,
-            client,
+            get client() {
+              return access.client;
+            },
+            data: access.data,
             dependencies: collector,
           },
           args,

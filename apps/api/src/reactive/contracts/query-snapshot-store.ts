@@ -4,6 +4,9 @@ import type { QueryContext } from './query-context.js';
 export abstract class QuerySnapshotStore {
   abstract snapshotTenantTransaction<T>(
     tenantId: string,
-    run: (client: QueryContext['client'], snapshotSeq: string) => Promise<T>,
+    run: (
+      access: Pick<QueryContext, 'client' | 'data'>,
+      snapshotSeq: string,
+    ) => Promise<T>,
   ): Promise<T>;
 }

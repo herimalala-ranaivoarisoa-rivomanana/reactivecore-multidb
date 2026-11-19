@@ -124,7 +124,10 @@ export class MutationEngineService {
       const data = await handler.execute(
         {
           principal,
-          client: transaction.client,
+          get client() {
+            return transaction.client;
+          },
+          data: transaction.data,
           recordChange: (change) =>
             changes.push({ ...structuredClone(change), eventId: randomUUID() }),
         },

@@ -1,9 +1,55 @@
 {
   "name": "",
   "queries": {
-    "items.list": { "args": {}, "result": [{ "id": "string", "title": "string" }] }
+    "items.list": {
+      "args": {},
+      "result": [
+        {
+          "id": "string",
+          "title": "string"
+        }
+      ]
+    },
+    "items.get": {
+      "args": {
+        "id": "string"
+      },
+      "result": [
+        {
+          "id": "string",
+          "title": "string"
+        },
+        "null"
+      ]
+    }
   },
   "mutations": {
-    "items.create": { "args": { "title": "string" }, "result": { "id": "string", "title": "string" } }
+    "items.create": {
+      "args": {
+        "title": "string"
+      },
+      "result": {
+        "id": "string",
+        "title": "string"
+      }
+    },
+    "items.update": {
+      "args": {
+        "id": "string",
+        "title": "string"
+      },
+      "result": {
+        "id": "string",
+        "title": "string"
+      }
+    },
+    "items.delete": {
+      "args": {
+        "id": "string"
+      },
+      "result": {
+        "id": "string"
+      }
+    }
   }
 }

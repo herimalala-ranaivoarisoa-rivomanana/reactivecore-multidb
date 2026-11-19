@@ -20,3 +20,7 @@
 !db/
 !db/migrations/
 !db/migrations/**
+
+!scripts/mysql-project.mjs
+!db/mysql/
+!db/mysql/**

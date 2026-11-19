@@ -1,6 +1,8 @@
 import { Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { postgresTenantData } from './postgres-tenant-data.js';
+import type { QueryContext } from '../reactive/contracts/query-context.js';
 import type { QuerySnapshotStore } from '../reactive/contracts/query-snapshot-store.js';
 
 @Injectable()
@@ -99,10 +101,16 @@ export class DatabaseService implements OnModuleDestroy, QuerySnapshotStore {
 
   async snapshotTenantTransaction<T>(
     tenantId: string,
-    callback: (client: PoolClient, snapshotSeq: string) => Promise<T>,
+    callback: (
+      access: Pick<QueryContext, 'client' | 'data'>,
+      snapshotSeq: string,
+    ) => Promise<T>,
   ): Promise<T> {
     return this.readOnlyTenantTransaction(tenantId, async (client) =>
-      callback(client, await this.currentCommitSeq(client)),
+      callback(
+        { client, data: postgresTenantData(client, tenantId) },
+        await this.currentCommitSeq(client),
+      ),
     );
   }
 

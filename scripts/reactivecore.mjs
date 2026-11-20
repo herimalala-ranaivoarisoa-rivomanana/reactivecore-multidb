@@ -42,7 +42,17 @@ function type(shape) {
   throw new Error('Unsupported type in project.json');
 }
 
-async function codegen(directory, manifest) {
+async function codegen(
+  directory,
+  manifest,
+  sdkPackage = '@reactivecore/client',
+) {
+  if (
+    sdkPackage.length > 214 ||
+    !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(sdkPackage)
+  )
+    throw new Error('Expected an npm package name for the SDK');
+
   function definitions(functions) {
     if (
       !functions ||
@@ -60,7 +70,7 @@ async function codegen(directory, manifest) {
       .join('\n');
   }
   const output = join(directory, 'client.ts');
-  const content = `${generated}import { ReactiveCoreClient } from '@reactivecore/client';
+  const content = `${generated}import { ReactiveCoreClient } from '${sdkPackage}';
 
 interface Queries {
 ${definitions(manifest.queries)}
@@ -359,10 +369,12 @@ async function main() {
     !['init', 'codegen', 'provision', 'tenant', 'serve', 'worker'].includes(
       command,
     ) ||
-    (command === 'tenant' ? !id || extra.length : id !== undefined)
+    (command === 'tenant' && !id) ||
+    (command !== 'tenant' && command !== 'codegen' && id !== undefined) ||
+    extra.length
   ) {
     throw new Error(
-      'Usage: reactivecore <init|codegen|provision|tenant|serve|worker> <directory> [tenant-uuid]',
+      'Usage: reactivecore <init|codegen|provision|tenant|serve|worker> <directory> [tenant-uuid for tenant | sdk-package for codegen]',
     );
   }
   const directory = resolve(path);
@@ -394,7 +406,7 @@ async function main() {
     throw new Error('Invalid project slug');
   const database = `reactivecore_${name.replaceAll('-', '_')}`;
 
-  if (command === 'codegen') return codegen(directory, manifest);
+  if (command === 'codegen') return codegen(directory, manifest, id);
   if (command === 'serve' || command === 'worker')
     return start(command, directory, name, database, manifest);
 
